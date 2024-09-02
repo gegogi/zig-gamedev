@@ -4,9 +4,15 @@ const zglfw = @import("zglfw");
 const zgpu = @import("zgpu");
 const wgpu = zgpu.wgpu;
 const zgui = @import("zgui");
+const sdl = @import("zsdl2");
+const sdl_image = @import("zsdl2_image");
+const file_dlg = @import("file_dlg.zig");
 
 const content_dir = @import("build_options").content_dir;
 const window_title = "ZXBrush";
+
+var file_dlg_obj: ?*file_dlg.FileDialog = null;
+var file_dlg_open: bool = false;
 
 pub fn main() !void {
     try zglfw.init();
@@ -69,6 +75,11 @@ pub fn main() !void {
 
     zgui.getStyle().scaleAllSizes(scale_factor);
 
+    if (file_dlg_obj == null) {
+        file_dlg_obj = try gpa.create(file_dlg.FileDialog);
+        file_dlg_obj.?.* = try file_dlg.FileDialog.init(gpa, "File Dialog", &.{ ".png", ".jpg" }, false);
+    }
+
     while (!window.shouldClose() and window.getKey(.escape) != .press) {
         zglfw.pollEvents();
 
@@ -81,12 +92,41 @@ pub fn main() !void {
         zgui.setNextWindowPos(.{ .x = 20.0, .y = 20.0, .cond = .first_use_ever });
         zgui.setNextWindowSize(.{ .w = -1.0, .h = -1.0, .cond = .first_use_ever });
 
-        if (zgui.begin("My window", .{})) {
-            if (zgui.button("Press me!", .{ .w = 200.0 })) {
-                std.debug.print("Button pressed\n", .{});
+        if (zgui.beginMainMenuBar()) {
+            if (zgui.beginMenu("File", true)) {
+                // 메뉴가 열려있는 동안 계속 불린다
+                //std.debug.print("Test selected\n", .{});
+                if (zgui.menuItem("Open", .{})) {
+                    file_dlg_open = true;
+                }
+                if (zgui.menuItem("Save", .{})) {
+                    file_dlg_open = true;
+                }
+                zgui.endMenu();
             }
+            if (zgui.beginMenu("Edit", true)) {
+                //std.debug.print("Test2 selected\n", .{});
+                if (zgui.menuItem("Item", .{})) {
+                    std.debug.print("Item selected\n", .{});
+                }
+                zgui.endMenu();
+            }
+            zgui.endMainMenuBar();
         }
-        zgui.end();
+
+        // if (zgui.begin("My window", .{})) {
+        //     if (zgui.button("Press me!", .{ .w = 200.0 })) {
+        //         std.debug.print("Button pressed\n", .{});
+        //     }
+        //     zgui.end();
+        // }
+
+        if (file_dlg_open) {
+            var need_confirm: bool = false;
+            std.debug.assert(file_dlg_obj != null);
+            file_dlg_open = try file_dlg_obj.?.ui(&need_confirm);
+            //_ = need_confirm;
+        }
 
         const swapchain_texv = gctx.swapchain.getCurrentTextureView();
         defer swapchain_texv.release();
@@ -108,5 +148,10 @@ pub fn main() !void {
 
         gctx.submit(&.{commands});
         _ = gctx.present();
+    }
+
+    if (file_dlg_obj != null) {
+        file_dlg_obj.?.deinit();
+        gpa.destroy(file_dlg_obj.?);
     }
 }
