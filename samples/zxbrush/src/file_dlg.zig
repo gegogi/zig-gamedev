@@ -44,19 +44,35 @@ pub fn StrWithBuf(comptime N: u32) type {
             self.str = self.buf[0..new_len];
             self.str_z = @ptrCast(self.str);
         }
+
+        pub fn replaceChar(self: *Self, from_c: u8, to_c: u8) void {
+            for (0..self.str.len) |i| {
+                if (self.str[i] == from_c) {
+                    self.str[i] = to_c;
+                }
+            }
+        }
+
+        pub fn lastChar(self: *Self) u8 {
+            if (self.str.len == 0) {
+                return 0;
+            }
+            return self.str[self.str.len - 1];
+        }
     };
 }
 
 const PathStr = StrWithBuf(1024);
 const MsgStr = StrWithBuf(256);
 const DirList = std.ArrayList(PathStr);
-const ExtSet = std.StringHashMap(bool);
+const ExtSet = std.StringHashMap(void);
 
 pub const FileDialog = struct {
     allocator: Allocator,
     title: MsgStr,
     exts: *ExtSet,
     is_saving: bool,
+    file_handler: *const fn (fpath: [:0]const u8) anyerror!void,
     is_confirmed: bool,
     cur_dir: PathStr,
     cur_dir_listing: DirList,
@@ -64,36 +80,53 @@ pub const FileDialog = struct {
     cur_file_text: PathStr,
     msg: MsgStr,
 
-    pub fn init(allocator: Allocator, title: []const u8, exts: []const []const u8, is_saving: bool) anyerror!FileDialog {
+    pub fn create(allocator: Allocator, title: []const u8, exts: []const []const u8, is_saving: bool, file_handler: *const fn (fpath: [:0]const u8) anyerror!void) anyerror!*FileDialog {
         const _exts = try allocator.create(ExtSet);
         _exts.* = ExtSet.init(allocator);
         for (exts) |ext| {
-            try _exts.put(ext, true);
+            try _exts.put(ext, {});
         }
-        const fd = FileDialog{
+        var dlg = try allocator.create(FileDialog);
+        dlg.* = FileDialog{
             .allocator = allocator,
-            .title = MsgStr.init(title),
+            .title = undefined,
             .exts = _exts,
             .is_saving = is_saving,
+            .file_handler = file_handler,
             .is_confirmed = false,
-            .cur_dir = PathStr.init(""),
+            .cur_dir = undefined,
             .cur_dir_listing = DirList.init(allocator),
             .cur_dir_item = -1,
-            .cur_file_text = PathStr.init(""),
-            .msg = MsgStr.init(""),
+            .cur_file_text = undefined,
+            .msg = undefined,
         };
-        return fd;
+        dlg.title.set(title);
+        try dlg.set_cur_dir("");
+        dlg.cur_file_text.set("");
+        dlg.msg.set("");
+        return dlg;
     }
 
-    pub fn deinit(self: *FileDialog) void {
+    pub fn destroy(self: *FileDialog) void {
         self.exts.deinit();
         self.allocator.destroy(self.exts);
         self.cur_dir_listing.deinit();
+        self.allocator.destroy(self);
     }
 
-    pub fn reset(self: *FileDialog, cur_dir: []u8, cur_file_text: []u8) void {
+    pub fn set_cur_dir(self: *FileDialog, cur_dir: []u8) anyerror!void {
+        var buf: PathStr.BufType() = undefined;
+        const _buf = try std.fs.cwd().realpath(cur_dir, &buf);
+        self.cur_dir.set(_buf);
+        self.cur_dir.replaceChar('\\', '/');
+        if (self.cur_dir.lastChar() != '/') {
+            self.cur_dir.concat("/");
+        }
+    }
+
+    pub fn reset(self: *FileDialog, cur_dir: []u8, cur_file_text: []u8) anyerror!void {
         self.is_confirmed = false;
-        self.cur_dir.set(cur_dir);
+        try self.set_cur_dir(cur_dir);
         self.cur_dir_listing.deinit();
         self.cur_dir_listing = DirList.init(self.allocator);
         self.cur_dir_item = -1;
@@ -108,11 +141,6 @@ pub const FileDialog = struct {
         var is_active: bool = true;
         var mouse_dbl_clk: bool = false;
         var ui_opened: bool = true;
-        if (std.mem.eql(u8, self.cur_dir.str, "")) {
-            var buf: PathStr.BufType() = undefined;
-            const _buf = try std.fs.cwd().realpath("", &buf);
-            self.cur_dir.set(_buf);
-        }
         _ = zgui.begin("Select/Input a File Name", .{
             .popen = &ui_opened,
             .flags = zgui.WindowFlags{ .no_collapse = true },
@@ -126,14 +154,15 @@ pub const FileDialog = struct {
                     .iterate = true,
                 });
                 defer dir_obj.close();
-                var walker = try dir_obj.walk(self.allocator);
-                defer walker.deinit();
-                while (try walker.next()) |entry| {
-                    var entry_name = PathStr.init(entry.basename);
+                var dir_iter = dir_obj.iterate();
+                while (try dir_iter.next()) |entry| {
+                    var entry_name: PathStr = undefined;
+                    entry_name.set(entry.name);
+                    //std.debug.print("cur_dir={s}, entry.name={s}\n", .{ self.cur_dir.str, entry.name });
                     if (entry.kind == .directory) {
                         entry_name.concat("/");
                     } else {
-                        if (!(self.exts.get(std.fs.path.extension(entry.basename)) orelse false)) {
+                        if (!self.exts.contains(std.fs.path.extension(entry.name))) {
                             continue;
                         }
                     }
@@ -189,16 +218,19 @@ pub const FileDialog = struct {
                 if (button_font != null) zgui.popFont();
                 if (mouse_dbl_clk or ok_clk or cancel_clk) {
                     if (mouse_dbl_clk or ok_clk) {
-                        var open_path = PathStr.init(self.cur_dir.str);
-                        open_path.concat("/");
+                        var open_path: PathStr = undefined;
+                        open_path.set(self.cur_dir.str);
                         open_path.concat(self.cur_file_text.str);
-                        if (open_path.str[open_path.str.len - 1] == '/') {
+                        if (open_path.lastChar() == '/') {
                             // dir
-                            const valid_path = true;
+                            var valid_path = true;
+                            std.fs.accessAbsolute(open_path.str, .{}) catch {
+                                valid_path = false;
+                            };
                             if (valid_path) {
-                                self.reset(open_path.str, "");
+                                try self.reset(open_path.str, "");
                             } else {
-                                self.reset("", "");
+                                try self.reset("", "");
                                 self.msg.set("Error while opening the path.");
                             }
                         } else {
@@ -206,7 +238,10 @@ pub const FileDialog = struct {
                             var can_open = true;
                             if (self.is_saving) {
                                 if (need_confirm) {
-                                    const valid_path = true;
+                                    var valid_path = true;
+                                    std.fs.accessAbsolute(open_path.str, .{}) catch {
+                                        valid_path = false;
+                                    };
                                     if (valid_path) {
                                         can_open = self.is_confirmed;
                                     }
@@ -216,9 +251,9 @@ pub const FileDialog = struct {
                             }
                             /////////////////////////////////////////////
                             if (can_open) {
-                                // call open handler
+                                try self.file_handler(open_path.str_z);
                                 is_active = false;
-                                self.reset("", "");
+                                try self.reset("", "");
                             } else {
                                 if (need_confirm) {
                                     self.msg.set("Check <");
@@ -228,11 +263,13 @@ pub const FileDialog = struct {
                             }
                         }
                     } else {
-                        self.reset("", "");
+                        try self.reset("", "");
                         is_active = false;
                     }
                 }
             }
+        } else {
+            is_active = false;
         }
         zgui.end();
 

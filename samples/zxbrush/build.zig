@@ -47,18 +47,34 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     });
     exe.step.dependOn(&install_content_step.step);
 
-    const zsdl = b.dependency("zsdl", .{});
-    exe.root_module.addImport("zsdl2", zsdl.module("zsdl2"));
+    const zmath = b.dependency("zmath", .{
+        .target = options.target,
+    });
+    exe.root_module.addImport("zmath", zmath.module("root"));
 
-    @import("zsdl").link_SDL2(exe);
-    const sdl2_libs_path = b.dependency("sdl2-prebuilt", .{}).path("").getPath(b);
+    const zstbi = b.dependency("zstbi", .{
+        .target = options.target,
+    });
+    exe.root_module.addImport("zstbi", zstbi.module("root"));
+    exe.linkLibrary(zstbi.artifact("zstbi"));
 
-    @import("zsdl").addLibraryPathsTo(sdl2_libs_path, exe);
-    @import("zsdl").addRPathsTo(sdl2_libs_path, exe);
+    //const zsdl = b.dependency("zsdl", .{});
+    //exe.root_module.addImport("zsdl2", zsdl.module("zsdl2"));
+    //exe.root_module.addImport("zsdl2_image", zsdl.module("zsdl2_image"));
 
-    if (@import("zsdl").install_SDL2(b, options.target.result, sdl2_libs_path, .bin)) |install_sdl2_step| {
-        b.getInstallStep().dependOn(install_sdl2_step);
-    }
+    //@import("zsdl").link_SDL2(exe);
+    //@import("zsdl").link_SDL2_image(exe);
+    //const sdl2_libs_path = b.dependency("sdl2-prebuilt", .{}).path("").getPath(b);
+
+    //@import("zsdl").addLibraryPathsTo(sdl2_libs_path, exe);
+    //@import("zsdl").addRPathsTo(sdl2_libs_path, exe);
+
+    //if (@import("zsdl").install_SDL2(b, options.target.result, sdl2_libs_path, .bin)) |install_sdl2_step| {
+    //    b.getInstallStep().dependOn(install_sdl2_step);
+    //}
+    //if (@import("zsdl").install_SDL2_image(b, options.target.result, sdl2_libs_path, .bin)) |install_sdl2_image_step| {
+    //    b.getInstallStep().dependOn(install_sdl2_image_step);
+    //}
 
     return exe;
 }
