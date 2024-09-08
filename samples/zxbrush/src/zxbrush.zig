@@ -153,15 +153,16 @@ const App = struct {
         std.debug.assert(image.format != null);
         const img_fmt = image.format.?.*;
         const img_num_components: u32 = switch (img_fmt) {
-            .argb8888 => 4,
+            .argb8888, .rgba8888, .abgr8888, .bgra8888 => 4,
+            .xrgb8888, .rgbx8888, .xbgr8888, .bgrx8888 => 3,
             else => 3,
         };
         const img_is_hdr = false;
         const img_bytes_per_component: u32 = switch (img_fmt) {
-            .argb8888 => 1,
+            .argb8888, .rgba8888, .abgr8888, .bgra8888, .xrgb8888, .rgbx8888, .xbgr8888, .bgrx8888 => 1,
             else => 1,
         };
-        const img_bytes_per_row = img_bytes_per_component * img_num_components * img_h;
+        const img_bytes_per_row = img_bytes_per_component * img_num_components * img_w;
         const img_data_len = img_h * img_bytes_per_row;
         const img_data = @as([*]u8, @ptrCast(image.pixels))[0..img_data_len];
 
