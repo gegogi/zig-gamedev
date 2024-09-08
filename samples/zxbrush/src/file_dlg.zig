@@ -64,7 +64,7 @@ pub fn StrWithBuf(comptime N: u32) type {
 
 const PathStr = StrWithBuf(1024);
 const MsgStr = StrWithBuf(256);
-const DirList = std.ArrayList(PathStr);
+const DirList = std.ArrayList(*PathStr);
 const ExtSet = std.StringHashMap(void);
 
 pub const FileDialog = struct {
@@ -101,20 +101,21 @@ pub const FileDialog = struct {
             .msg = undefined,
         };
         dlg.title.set(title);
-        try dlg.set_cur_dir("");
+        try dlg.set_cur_dir(".");
         dlg.cur_file_text.set("");
         dlg.msg.set("");
         return dlg;
     }
 
     pub fn destroy(self: *FileDialog) void {
+        self.reset(".", "") catch unreachable;
         self.exts.deinit();
         self.allocator.destroy(self.exts);
         self.cur_dir_listing.deinit();
         self.allocator.destroy(self);
     }
 
-    pub fn set_cur_dir(self: *FileDialog, cur_dir: []u8) anyerror!void {
+    pub fn set_cur_dir(self: *FileDialog, cur_dir: []const u8) anyerror!void {
         var buf: PathStr.BufType() = undefined;
         const _buf = try std.fs.cwd().realpath(cur_dir, &buf);
         self.cur_dir.set(_buf);
@@ -124,11 +125,13 @@ pub const FileDialog = struct {
         }
     }
 
-    pub fn reset(self: *FileDialog, cur_dir: []u8, cur_file_text: []u8) anyerror!void {
+    pub fn reset(self: *FileDialog, cur_dir: []const u8, cur_file_text: []const u8) anyerror!void {
         self.is_confirmed = false;
         try self.set_cur_dir(cur_dir);
-        self.cur_dir_listing.deinit();
-        self.cur_dir_listing = DirList.init(self.allocator);
+        for (self.cur_dir_listing.items) |item| {
+            self.allocator.destroy(item);
+        }
+        self.cur_dir_listing.clearAndFree();
         self.cur_dir_item = -1;
         self.cur_file_text.set(cur_file_text);
         self.msg.set("");
@@ -148,8 +151,9 @@ pub const FileDialog = struct {
         if (ui_opened) {
             //const cur_dir_text = self.cur_dir;
             if (self.cur_dir_listing.items.len == 0) {
-                const par_dir = try self.cur_dir_listing.addOne();
+                const par_dir = try self.allocator.create(PathStr);
                 par_dir.set("../");
+                try self.cur_dir_listing.append(par_dir);
                 var dir_obj: std.fs.Dir = try std.fs.openDirAbsolute(self.cur_dir.str, std.fs.Dir.OpenDirOptions{
                     .iterate = true,
                 });
@@ -166,8 +170,9 @@ pub const FileDialog = struct {
                             continue;
                         }
                     }
-                    const entry_str = try self.cur_dir_listing.addOne();
+                    const entry_str = try self.allocator.create(PathStr);
                     entry_str.set(entry_name.str);
+                    try self.cur_dir_listing.append(entry_str);
                 }
                 if (native_os == .windows) {
                     // list all drives
@@ -230,7 +235,7 @@ pub const FileDialog = struct {
                             if (valid_path) {
                                 try self.reset(open_path.str, "");
                             } else {
-                                try self.reset("", "");
+                                try self.reset(".", "");
                                 self.msg.set("Error while opening the path.");
                             }
                         } else {
@@ -253,7 +258,7 @@ pub const FileDialog = struct {
                             if (can_open) {
                                 try self.file_handler(open_path.str_z);
                                 is_active = false;
-                                try self.reset("", "");
+                                try self.reset(".", "");
                             } else {
                                 if (need_confirm) {
                                     self.msg.set("Check <");
@@ -263,7 +268,7 @@ pub const FileDialog = struct {
                             }
                         }
                     } else {
-                        try self.reset("", "");
+                        try self.reset(".", "");
                         is_active = false;
                     }
                 }
