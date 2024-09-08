@@ -5,8 +5,8 @@ const zgpu = @import("zgpu");
 const wgpu = zgpu.wgpu;
 const zgui = @import("zgui");
 const zm = @import("zmath");
-//const sdl = @import("zsdl2");
-//const sdl_image = @import("zsdl2_image");
+const sdl = @import("zsdl2");
+const sdl_image = @import("zsdl2_image");
 const zstbi = @import("zstbi");
 const file_dlg = @import("file_dlg.zig");
 const wgsl = @import("zxbrush_wgsl.zig");
@@ -110,14 +110,14 @@ const App = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.reset();
+        self.clearImage();
         self.gctx.releaseResource(self.main_pipe);
         self.gctx.releaseResource(self.main_bgl);
         self.gctx.releaseResource(self.depth_texv);
         self.gctx.destroyResource(self.depth_tex);
     }
 
-    pub fn reset(self: *Self) void {
+    pub fn clearImage(self: *Self) void {
         if (self.img_rend_bg != null) {
             self.gctx.releaseResource(self.img_rend_bg.?);
             self.img_rend_bg = null;
@@ -134,21 +134,55 @@ const App = struct {
         self.img_h = 0;
     }
 
-    pub fn setImage(self: *Self, image: zstbi.Image) void {
-        self.img_w = image.width;
-        self.img_h = image.height;
+    pub fn setStiImage(self: *Self, image: zstbi.Image) void {
+        const img_w = image.width;
+        const img_h = image.height;
+        const img_num_components = image.num_components;
+        const img_bytes_per_component = image.bytes_per_component;
+        const img_is_hdr = image.is_hdr;
+        const img_bytes_per_row = image.bytes_per_row;
+        const img_data = image.data;
+
+        self.setImageData(img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
+    }
+
+    pub fn setSdlImage(self: *Self, image: *sdl.Surface) void {
+        const img_w: u32 = @intCast(image.w);
+        const img_h: u32 = @intCast(image.h);
+
+        std.debug.assert(image.format != null);
+        const img_fmt = image.format.?.*;
+        const img_num_components: u32 = switch (img_fmt) {
+            .argb8888 => 4,
+            else => 3,
+        };
+        const img_is_hdr = false;
+        const img_bytes_per_component: u32 = switch (img_fmt) {
+            .argb8888 => 1,
+            else => 1,
+        };
+        const img_bytes_per_row = img_bytes_per_component * img_num_components * img_h;
+        const img_data_len = img_h * img_bytes_per_row;
+        const img_data = @as([*]u8, @ptrCast(image.pixels))[0..img_data_len];
+
+        self.setImageData(img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
+    }
+
+    fn setImageData(self: *Self, w: u32, h: u32, num_componenets: u32, bytes_per_component: u32, is_hdr: bool, bytes_per_row: u32, data: []const u8) void {
+        self.img_w = w;
+        self.img_h = h;
 
         self.img_tex = self.gctx.createTexture(.{
             .usage = .{ .texture_binding = true, .copy_dst = true },
             .size = .{
-                .width = image.width,
-                .height = image.height,
+                .width = w,
+                .height = h,
                 .depth_or_array_layers = 1,
             },
             .format = zgpu.imageInfoToTextureFormat(
-                image.num_components,
-                image.bytes_per_component,
-                image.is_hdr,
+                num_componenets,
+                bytes_per_component,
+                is_hdr,
             ),
             .mip_level_count = 1,
         });
@@ -156,12 +190,12 @@ const App = struct {
         self.gctx.queue.writeTexture(
             .{ .texture = self.gctx.lookupResource(self.img_tex.?).? },
             .{
-                .bytes_per_row = image.bytes_per_row,
-                .rows_per_image = image.height,
+                .bytes_per_row = bytes_per_row,
+                .rows_per_image = h,
             },
-            .{ .width = image.width, .height = image.height },
+            .{ .width = w, .height = h },
             u8,
-            image.data,
+            data,
         );
 
         self.img_rend_bg = self.gctx.createBindGroup(self.main_bgl, &.{
@@ -179,13 +213,18 @@ var file_dlg_open: bool = false;
 fn open_img(fpath: [:0]const u8) !void {
     std.debug.print("opening file: {s}\n", .{fpath});
 
-    //const surface = sdl_image.load(@ptrCast(fpath)) catch unreachable;
-    //_ = surface;
-    var image = try zstbi.Image.loadFromFile(@ptrCast(fpath), 4);
-    defer image.deinit();
+    app.clearImage();
 
-    app.reset();
-    app.setImage(image);
+    const useSdl = true;
+    if (useSdl) {
+        const image = sdl_image.load(@ptrCast(fpath)) catch unreachable;
+        defer image.free();
+        app.setSdlImage(image);
+    } else {
+        var image = try zstbi.Image.loadFromFile(@ptrCast(fpath), 4);
+        defer image.deinit();
+        app.setStiImage(image);
+    }
 }
 
 fn createRenderPipe(
