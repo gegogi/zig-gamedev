@@ -62,17 +62,93 @@ pub fn StrWithBuf(comptime N: u32) type {
     };
 }
 
-const PathStr = StrWithBuf(1024);
-const MsgStr = StrWithBuf(256);
-const DirList = std.ArrayList(*PathStr);
-const ExtSet = std.StringHashMap(void);
+pub const PathStr = StrWithBuf(1024);
+pub const MsgStr = StrWithBuf(256);
+pub const ExtSet = std.StringHashMap(void);
+
+pub fn createExtSet(allocator: Allocator, exts: []const []const u8) !*ExtSet {
+    const ext_set = try allocator.create(ExtSet);
+    ext_set.* = ExtSet.init(allocator);
+    for (exts) |ext| {
+        try ext_set.put(ext, {});
+    }
+    return ext_set;
+}
+
+fn pathStrLessThan(_: void, a: *PathStr, b: *PathStr) bool {
+    return (std.mem.order(u8, a.str, b.str) == .lt);
+}
+
+pub const DirList = struct {
+    allocator: Allocator,
+    name_list: std.ArrayList(*PathStr) = undefined,
+    is_populated: bool = false,
+
+    const Self: type = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        var self = Self{
+            .allocator = allocator,
+        };
+        self.name_list = @TypeOf(self.name_list).init(allocator);
+        return self;
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.name_list.deinit();
+    }
+
+    pub fn reset(self: *Self) void {
+        for (self.name_list.items) |item| {
+            self.name_list.allocator.destroy(item);
+        }
+        self.name_list.clearAndFree();
+        self.is_populated = false;
+    }
+
+    pub fn populate(self: *Self, dpath: []const u8, add_sub_dirs: bool, ext_set: ?*ExtSet) !void {
+        self.is_populated = true;
+        if (add_sub_dirs) {
+            const par_dir = try self.allocator.create(PathStr);
+            par_dir.set("../");
+            try self.name_list.append(par_dir);
+        }
+        var dir_obj: std.fs.Dir = try std.fs.openDirAbsolute(dpath, std.fs.Dir.OpenDirOptions{
+            .iterate = true,
+        });
+        defer dir_obj.close();
+        var dir_iter = dir_obj.iterate();
+        while (try dir_iter.next()) |entry| {
+            var entry_name: PathStr = undefined;
+            entry_name.set(entry.name);
+            //std.debug.print("cur_dir={s}, entry.name={s}\n", .{ self.cur_dir.str, entry.name });
+            if (entry.kind == .directory) {
+                if (!add_sub_dirs) {
+                    continue;
+                }
+                entry_name.concat("/");
+            } else {
+                if (ext_set != null and !ext_set.?.contains(std.fs.path.extension(entry_name.str))) {
+                    continue;
+                }
+            }
+            const entry_str = try self.allocator.create(PathStr);
+            entry_str.set(entry_name.str);
+            try self.name_list.append(entry_str);
+        }
+        if (native_os == .windows) {
+            // list all drives
+        }
+        std.mem.sort(*PathStr, self.name_list.items, {}, pathStrLessThan);
+    }
+};
 
 pub const FileDialog = struct {
     allocator: Allocator,
     title: MsgStr,
     exts: *ExtSet,
     is_saving: bool,
-    file_handler: *const fn (fpath: [:0]const u8) anyerror!void,
+    file_open_handler: *const fn (fpath: [:0]const u8, is_saving: bool) anyerror!void,
     is_confirmed: bool,
     cur_dir: PathStr,
     cur_dir_listing: DirList,
@@ -80,19 +156,16 @@ pub const FileDialog = struct {
     cur_file_text: PathStr,
     msg: MsgStr,
 
-    pub fn create(allocator: Allocator, title: []const u8, exts: []const []const u8, is_saving: bool, file_handler: *const fn (fpath: [:0]const u8) anyerror!void) anyerror!*FileDialog {
-        const _exts = try allocator.create(ExtSet);
-        _exts.* = ExtSet.init(allocator);
-        for (exts) |ext| {
-            try _exts.put(ext, {});
-        }
-        var dlg = try allocator.create(FileDialog);
-        dlg.* = FileDialog{
+    const Self = @This();
+
+    pub fn create(allocator: Allocator, title: []const u8, exts: []const []const u8, is_saving: bool, file_open_handler: *const fn (fpath: [:0]const u8, is_saving: bool) anyerror!void) anyerror!*FileDialog {
+        var dlg = try allocator.create(Self);
+        dlg.* = Self{
             .allocator = allocator,
             .title = undefined,
-            .exts = _exts,
+            .exts = try createExtSet(allocator, exts),
             .is_saving = is_saving,
-            .file_handler = file_handler,
+            .file_open_handler = file_open_handler,
             .is_confirmed = false,
             .cur_dir = undefined,
             .cur_dir_listing = DirList.init(allocator),
@@ -107,7 +180,7 @@ pub const FileDialog = struct {
         return dlg;
     }
 
-    pub fn destroy(self: *FileDialog) void {
+    pub fn destroy(self: *Self) void {
         self.reset(".", "") catch unreachable;
         self.exts.deinit();
         self.allocator.destroy(self.exts);
@@ -115,7 +188,7 @@ pub const FileDialog = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn set_cur_dir(self: *FileDialog, cur_dir: []const u8) anyerror!void {
+    pub fn set_cur_dir(self: *Self, cur_dir: []const u8) anyerror!void {
         var buf: PathStr.BufType() = undefined;
         const _buf = try std.fs.cwd().realpath(cur_dir, &buf);
         self.cur_dir.set(_buf);
@@ -125,19 +198,16 @@ pub const FileDialog = struct {
         }
     }
 
-    pub fn reset(self: *FileDialog, cur_dir: []const u8, cur_file_text: []const u8) anyerror!void {
+    pub fn reset(self: *Self, cur_dir: []const u8, cur_file_text: []const u8) anyerror!void {
         self.is_confirmed = false;
         try self.set_cur_dir(cur_dir);
-        for (self.cur_dir_listing.items) |item| {
-            self.allocator.destroy(item);
-        }
-        self.cur_dir_listing.clearAndFree();
+        self.cur_dir_listing.reset();
         self.cur_dir_item = -1;
         self.cur_file_text.set(cur_file_text);
         self.msg.set("");
     }
 
-    pub fn ui(self: *FileDialog, p_need_confirm: *bool) anyerror!bool {
+    pub fn ui(self: *Self, p_need_confirm: *bool) anyerror!bool {
         if (base_font != null) zgui.pushFont(base_font.?);
 
         const need_confirm = p_need_confirm.*;
@@ -150,48 +220,23 @@ pub const FileDialog = struct {
         });
         if (ui_opened) {
             //const cur_dir_text = self.cur_dir;
-            if (self.cur_dir_listing.items.len == 0) {
-                const par_dir = try self.allocator.create(PathStr);
-                par_dir.set("../");
-                try self.cur_dir_listing.append(par_dir);
-                var dir_obj: std.fs.Dir = try std.fs.openDirAbsolute(self.cur_dir.str, std.fs.Dir.OpenDirOptions{
-                    .iterate = true,
-                });
-                defer dir_obj.close();
-                var dir_iter = dir_obj.iterate();
-                while (try dir_iter.next()) |entry| {
-                    var entry_name: PathStr = undefined;
-                    entry_name.set(entry.name);
-                    //std.debug.print("cur_dir={s}, entry.name={s}\n", .{ self.cur_dir.str, entry.name });
-                    if (entry.kind == .directory) {
-                        entry_name.concat("/");
-                    } else {
-                        if (!self.exts.contains(std.fs.path.extension(entry.name))) {
-                            continue;
-                        }
-                    }
-                    const entry_str = try self.allocator.create(PathStr);
-                    entry_str.set(entry_name.str);
-                    try self.cur_dir_listing.append(entry_str);
-                }
-                if (native_os == .windows) {
-                    // list all drives
-                }
+            if (!self.cur_dir_listing.is_populated) {
+                try self.cur_dir_listing.populate(self.cur_dir.str, true, self.exts);
             }
             zgui.text("{s}", .{self.cur_dir.str});
             if (zgui.beginListBox("Items", .{})) {
-                for (0.., self.cur_dir_listing.items) |i, list_item| {
+                for (0.., self.cur_dir_listing.name_list.items) |i, fname| {
                     var selected = (i == self.cur_dir_item);
-                    const changed = zgui.selectableStatePtr(list_item.str_z, .{ .pselected = &selected, .flags = zgui.SelectableFlags{ .allow_double_click = true } });
+                    const changed = zgui.selectableStatePtr(fname.str_z, .{ .pselected = &selected, .flags = zgui.SelectableFlags{ .allow_double_click = true } });
                     const hovered = zgui.isItemHovered(.{});
                     if (hovered) {
                         mouse_dbl_clk = zgui.isMouseDoubleClicked(zgui.MouseButton.left);
                     }
                     if (changed and selected) {
                         self.cur_dir_item = @intCast(i);
-                        self.cur_file_text.set(list_item.str);
+                        self.cur_file_text.set(fname.str);
                     } else if (mouse_dbl_clk and self.cur_dir_item == i) {
-                        self.cur_file_text.set(list_item.str);
+                        self.cur_file_text.set(fname.str);
                     }
                 }
                 zgui.endListBox();
@@ -256,7 +301,7 @@ pub const FileDialog = struct {
                             }
                             /////////////////////////////////////////////
                             if (can_open) {
-                                try self.file_handler(open_path.str_z);
+                                try self.file_open_handler(open_path.str_z, self.is_saving);
                                 is_active = false;
                                 try self.reset(".", "");
                             } else {

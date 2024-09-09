@@ -13,6 +13,11 @@ const wgsl = @import("zxbrush_wgsl.zig");
 
 const content_dir = @import("build_options").content_dir;
 const window_title = "ZXBrush";
+const img_exts: [2][]const u8 = .{ ".png", ".jpg" };
+
+const Allocator = std.mem.Allocator;
+const PathStr = file_dlg.PathStr;
+const DirList = file_dlg.DirList;
 
 const Vertex = extern struct {
     position: [3]f32,
@@ -28,38 +33,58 @@ const Vertex = extern struct {
 
 const MeshUniforms = struct {
     object_to_world: zm.Mat,
+    object_to_world_edge: zm.Mat,
     world_to_clip: zm.Mat,
 };
 
 const App = struct {
+    allocator: Allocator,
+    window: *zglfw.Window,
     gctx: *zgpu.GraphicsContext,
 
     vertex_buf: zgpu.BufferHandle = undefined,
     index_buf: zgpu.BufferHandle = undefined,
     depth_tex: zgpu.TextureHandle = undefined,
     depth_texv: zgpu.TextureViewHandle = undefined,
-    main_bgl: zgpu.BindGroupLayoutHandle = undefined,
-    main_samp: zgpu.SamplerHandle = undefined,
-    main_pipe: zgpu.RenderPipelineHandle = undefined,
+    img_rend_bgl: zgpu.BindGroupLayoutHandle = undefined,
+    edge_rend_bgl: zgpu.BindGroupLayoutHandle = undefined,
+    near_samp: zgpu.SamplerHandle = undefined,
+    lin_samp: zgpu.SamplerHandle = undefined,
+    img_rend_pipe: zgpu.RenderPipelineHandle = undefined,
+    edge_rend_pipe: zgpu.RenderPipelineHandle = undefined,
 
     img_w: u32 = 0,
     img_h: u32 = 0,
+    img_path: PathStr = undefined,
     img_tex: ?zgpu.TextureHandle = null,
     img_texv: ?zgpu.TextureViewHandle = null,
-    img_rend_bg: ?zgpu.BindGroupHandle = undefined,
+    img_rend_bg: ?zgpu.BindGroupHandle = null,
+    edge_rend_bg: ?zgpu.BindGroupHandle = null,
 
     const Self = @This();
 
-    pub fn init(gctx: *zgpu.GraphicsContext, allocator: std.mem.Allocator) App {
+    pub fn init(allocator: Allocator, window: *zglfw.Window, gctx: *zgpu.GraphicsContext) App {
         var self = App{
+            .allocator = allocator,
+            .window = window,
             .gctx = gctx,
         };
-        self.main_bgl = gctx.createBindGroupLayout(&.{
+        self.img_rend_bgl = gctx.createBindGroupLayout(&.{
             zgpu.bufferEntry(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0),
             zgpu.textureEntry(1, .{ .fragment = true }, .float, .tvdim_2d, false),
             zgpu.samplerEntry(2, .{ .fragment = true }, .filtering),
         });
-        self.main_samp = gctx.createSampler(.{
+        self.edge_rend_bgl = gctx.createBindGroupLayout(&.{
+            zgpu.bufferEntry(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0),
+        });
+
+        self.near_samp = gctx.createSampler(.{
+            .mag_filter = .nearest,
+            .min_filter = .nearest,
+            .mipmap_filter = .nearest,
+            .max_anisotropy = 1,
+        });
+        self.lin_samp = gctx.createSampler(.{
             .mag_filter = .linear,
             .min_filter = .linear,
             .mipmap_filter = .linear,
@@ -69,8 +94,6 @@ const App = struct {
         const indices: [6]u32 = .{ 0, 1, 2, 0, 2, 3 };
         const positions: [4][3]f32 = .{ .{ -0.5, -0.5, 0.0 }, .{ 0.5, -0.5, 0.0 }, .{ 0.5, 0.5, 0.0 }, .{ -0.5, 0.5, 0.0 } };
         const texcoords: [4][2]f32 = .{ .{ 0.0, 1.0 }, .{ 1.0, 1.0 }, .{ 1.0, 0.0 }, .{ 0.0, 0.0 } };
-
-        // VB
         self.vertex_buf = gctx.createBuffer(.{
             .usage = .{ .copy_dst = true, .vertex = true },
             .size = positions.len * @sizeOf(Vertex),
@@ -81,7 +104,6 @@ const App = struct {
             vertex_data[i].texcoord = texcoords[i];
         }
         gctx.queue.writeBuffer(gctx.lookupResource(self.vertex_buf).?, 0, Vertex, &vertex_data);
-        // IB
         self.index_buf = gctx.createBuffer(.{
             .usage = .{ .copy_dst = true, .index = true },
             .size = indices.len * @sizeOf(u32),
@@ -91,10 +113,11 @@ const App = struct {
         const depth = createDepthTexture(gctx);
         self.depth_tex = depth.tex;
         self.depth_texv = depth.texv;
+
         createRenderPipe(
             allocator,
             gctx,
-            &.{self.main_bgl},
+            &.{self.img_rend_bgl},
             wgsl.img_vs,
             wgsl.img_fs,
             zgpu.GraphicsContext.swapchain_format,
@@ -104,20 +127,46 @@ const App = struct {
                 .depth_write_enabled = true,
                 .depth_compare = .less_equal,
             },
-            &self.main_pipe,
+            &self.img_rend_pipe,
         );
+        createRenderPipe(
+            allocator,
+            gctx,
+            &.{self.edge_rend_bgl},
+            wgsl.edge_vs,
+            wgsl.edge_fs,
+            zgpu.GraphicsContext.swapchain_format,
+            false,
+            wgpu.DepthStencilState{
+                .format = .depth32_float,
+                .depth_write_enabled = true,
+                .depth_compare = .less_equal,
+            },
+            &self.edge_rend_pipe,
+        );
+
+        self.img_path.set("");
+
         return self;
     }
 
     pub fn deinit(self: *Self) void {
         self.clearImage();
-        self.gctx.releaseResource(self.main_pipe);
-        self.gctx.releaseResource(self.main_bgl);
+        self.gctx.releaseResource(self.edge_rend_pipe);
+        self.gctx.releaseResource(self.img_rend_pipe);
+        self.gctx.releaseResource(self.edge_rend_bgl);
+        self.gctx.releaseResource(self.img_rend_bgl);
+        self.gctx.releaseResource(self.lin_samp);
+        self.gctx.releaseResource(self.near_samp);
         self.gctx.releaseResource(self.depth_texv);
         self.gctx.destroyResource(self.depth_tex);
     }
 
     pub fn clearImage(self: *Self) void {
+        if (self.edge_rend_bg != null) {
+            self.gctx.releaseResource(self.edge_rend_bg.?);
+            self.edge_rend_bg = null;
+        }
         if (self.img_rend_bg != null) {
             self.gctx.releaseResource(self.img_rend_bg.?);
             self.img_rend_bg = null;
@@ -130,6 +179,7 @@ const App = struct {
             self.gctx.destroyResource(self.img_tex.?);
             self.img_tex = null;
         }
+        self.img_path.set("");
         self.img_w = 0;
         self.img_h = 0;
     }
@@ -199,11 +249,28 @@ const App = struct {
             data,
         );
 
-        self.img_rend_bg = self.gctx.createBindGroup(self.main_bgl, &.{
+        self.img_rend_bg = self.gctx.createBindGroup(self.img_rend_bgl, &.{
             .{ .binding = 0, .buffer_handle = self.gctx.uniforms.buffer, .offset = 0, .size = @sizeOf(MeshUniforms) },
             .{ .binding = 1, .texture_view_handle = self.img_texv },
-            .{ .binding = 2, .sampler_handle = self.main_samp },
+            .{ .binding = 2, .sampler_handle = self.near_samp },
         });
+        self.edge_rend_bg = self.gctx.createBindGroup(self.edge_rend_bgl, &.{
+            .{ .binding = 0, .buffer_handle = self.gctx.uniforms.buffer, .offset = 0, .size = @sizeOf(MeshUniforms) },
+        });
+
+        var win_size = self.window.getSize();
+        var will_resize = false;
+        if (win_size[0] < @as(i32, @intCast(w)) + 2) {
+            win_size[0] = @as(i32, @intCast(w)) + 2;
+            will_resize = true;
+        }
+        if (win_size[1] < @as(i32, @intCast(h)) + 2) {
+            win_size[1] = @as(i32, @intCast(h)) + 2;
+            will_resize = true;
+        }
+        if (will_resize) {
+            self.window.setSize(win_size[0], win_size[1]);
+        }
     }
 };
 
@@ -211,20 +278,55 @@ var app: App = undefined;
 var file_dlg_obj: ?*file_dlg.FileDialog = null;
 var file_dlg_open: bool = false;
 
-fn open_img(fpath: [:0]const u8) !void {
+fn openImage(fpath: [:0]const u8, is_saving: bool) !void {
     std.debug.print("opening file: {s}\n", .{fpath});
 
     app.clearImage();
 
     const useSdl = true;
-    if (useSdl) {
-        const image = sdl_image.load(@ptrCast(fpath)) catch unreachable;
-        defer image.free();
-        app.setSdlImage(image);
+    if (is_saving) {
+        // TODO : implement save
     } else {
-        var image = try zstbi.Image.loadFromFile(@ptrCast(fpath), 4);
-        defer image.deinit();
-        app.setStiImage(image);
+        if (useSdl) {
+            const image = sdl_image.load(@ptrCast(fpath)) catch unreachable;
+            defer image.free();
+            app.setSdlImage(image);
+        } else {
+            var image = try zstbi.Image.loadFromFile(@ptrCast(fpath), 4);
+            defer image.deinit();
+            app.setStiImage(image);
+        }
+    }
+
+    app.img_path.set(fpath);
+}
+
+fn openNeighborImage(offset: i32) !void {
+    std.debug.assert(offset != 0);
+    if (app.img_path.str.len == 0) {
+        return;
+    }
+    var dir_listing = DirList.init(app.allocator);
+    const ext_set = try file_dlg.createExtSet(app.allocator, &img_exts);
+    const img_dpath = std.fs.path.dirname(app.img_path.str).?;
+    const img_fname = std.fs.path.basename(app.img_path.str);
+    std.debug.print("img_dpath={s}, img_fname={s}\n", .{ img_dpath, img_fname });
+    try dir_listing.populate(img_dpath, false, ext_set);
+    var next_fpath: ?PathStr = null;
+    for (0.., dir_listing.name_list.items) |i, fname| {
+        if (std.mem.eql(u8, img_fname, fname.str)) {
+            if (i < dir_listing.name_list.items.len - 1) {
+                next_fpath = PathStr{};
+                next_fpath.?.set(img_dpath);
+                next_fpath.?.concat("/");
+                next_fpath.?.concat(dir_listing.name_list.items[i + 1].str);
+                std.debug.print("found next_fpath={s}\n", .{next_fpath.?.str});
+                break;
+            }
+        }
+    }
+    if (next_fpath != null) {
+        try openImage(next_fpath.?.str_z, false);
     }
 }
 
@@ -264,7 +366,6 @@ fn createRenderPipe(
         .attributes = &vertex_attributes,
     }};
 
-    // Create a render pipeline.
     const pipe_desc = wgpu.RenderPipelineDescriptor{
         .vertex = wgpu.VertexState{
             .module = vs_mod,
@@ -304,15 +405,10 @@ fn createDepthTexture(gctx: *zgpu.GraphicsContext) struct {
     return .{ .tex = tex, .texv = texv };
 }
 
-fn update_ui() !void {
-    //if (app.img_texv != null) {
-    //    const tex_id = gctx.lookupResource(app.img_texv.?).?;
-    //    zgui.image(tex_id, .{ .w = @floatFromInt(app.img_w), .h = @floatFromInt(app.img_h) });
-    //}
-
+fn updateGUI() !void {
     if (zgui.beginMainMenuBar()) {
         if (zgui.beginMenu("File", true)) {
-            if (zgui.menuItem("Open", .{})) {
+            if (zgui.menuItem("Load", .{})) {
                 file_dlg_open = true;
                 file_dlg_obj.?.is_saving = false;
             }
@@ -331,18 +427,45 @@ fn update_ui() !void {
         zgui.endMainMenuBar();
     }
 
-    // if (zgui.begin("My window", .{})) {
-    //     if (zgui.button("Press me!", .{ .w = 200.0 })) {
-    //         std.debug.print("Button pressed\n", .{});
-    //     }
-    //     zgui.end();
-    // }
-
     if (file_dlg_open) {
         var need_confirm: bool = false;
         std.debug.assert(file_dlg_obj != null);
         file_dlg_open = try file_dlg_obj.?.ui(&need_confirm);
         //_ = need_confirm;
+    }
+}
+
+fn onKey(window: *zglfw.Window, key: zglfw.Key, scancode: i32, action: zglfw.Action, mods: zglfw.Mods) callconv(.C) void {
+    _ = window;
+    _ = scancode;
+    var openImageOffset: i32 = 0;
+    if (key == .left or key == .comma) {
+        if (action == .press) {
+            openImageOffset = if (mods.shift) 5 else 1;
+        }
+    } else if (key == .right or key == .period) {
+        if (action == .press) {
+            openImageOffset = if (mods.shift) -5 else -1;
+        }
+    }
+    if (openImageOffset != 0) {
+        openNeighborImage(openImageOffset) catch {};
+    }
+}
+
+fn onMouseScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void {
+    _ = xoffset;
+    const rbutton_state = window.getMouseButton(.right);
+    if (rbutton_state == .press or rbutton_state == .repeat) {
+        var openImageOffset: i32 = 0;
+        if (yoffset > 0) {
+            openImageOffset = -1;
+        } else if (yoffset < 0) {
+            openImageOffset = 1;
+        }
+        if (openImageOffset != 0) {
+            openNeighborImage(openImageOffset) catch {};
+        }
     }
 }
 
@@ -357,7 +480,7 @@ pub fn main() !void {
     zstbi.init(allocator);
     defer zstbi.deinit();
 
-    // Change current working directory to where the executable is located.
+    // set cwd as exe dir
     {
         var buffer: [1024]u8 = undefined;
         const path = std.fs.selfExeDirPath(buffer[0..]) catch ".";
@@ -368,7 +491,7 @@ pub fn main() !void {
 
     const window = try zglfw.Window.create(800, 800, window_title, null);
     defer window.destroy();
-    window.setSizeLimits(400, 400, -1, -1);
+    window.setSizeLimits(200, 200, -1, -1);
 
     const gctx = try zgpu.GraphicsContext.create(
         allocator,
@@ -387,7 +510,7 @@ pub fn main() !void {
     );
     defer gctx.destroy(allocator);
 
-    app = App.init(gctx, allocator);
+    app = App.init(allocator, window, gctx);
     defer app.deinit();
 
     const scale_factor = scale_factor: {
@@ -414,8 +537,10 @@ pub fn main() !void {
     zgui.getStyle().scaleAllSizes(scale_factor);
 
     if (file_dlg_obj == null) {
-        file_dlg_obj = try file_dlg.FileDialog.create(allocator, "File Dialog", &.{ ".png", ".jpg" }, false, open_img);
+        file_dlg_obj = try file_dlg.FileDialog.create(allocator, "File Dialog", &img_exts, false, openImage);
     }
+
+    _ = window.setKeyCallback(onKey);
 
     while (!window.shouldClose() and window.getKey(.escape) != .press) {
         zglfw.pollEvents();
@@ -425,11 +550,10 @@ pub fn main() !void {
             gctx.swapchain_descriptor.height,
         );
 
-        // Set the starting window position and size to custom values
         zgui.setNextWindowPos(.{ .x = 20.0, .y = 20.0, .cond = .first_use_ever });
         zgui.setNextWindowSize(.{ .w = -1.0, .h = -1.0, .cond = .first_use_ever });
 
-        try update_ui();
+        try updateGUI();
 
         const fb_width = gctx.swapchain_descriptor.width;
         const fb_height = gctx.swapchain_descriptor.height;
@@ -441,8 +565,9 @@ pub fn main() !void {
         //     200.0,
         // );
         // const cam_world_to_clip = zm.mul(cam_world_to_view, cam_view_to_clip);
-        const cam_world_to_clip = zm.orthographicLh(@floatFromInt(fb_width), @floatFromInt(fb_height), -1.0, 1.0);
         const object_to_world = zm.scaling(@floatFromInt(app.img_w), @floatFromInt(app.img_h), 1.0);
+        const object_to_world_edge = zm.scaling(@floatFromInt(app.img_w + 2), @floatFromInt(app.img_h + 2), 1.0);
+        const cam_world_to_clip = zm.orthographicLh(@floatFromInt(fb_width), @floatFromInt(fb_height), -1.0, 1.0);
 
         const swapchain_texv = gctx.swapchain.getCurrentTextureView();
         defer swapchain_texv.release();
@@ -457,25 +582,32 @@ pub fn main() !void {
                     // TODO : move to outside
                     const vb_info = gctx.lookupResourceInfo(app.vertex_buf) orelse break :pass;
                     const ib_info = gctx.lookupResourceInfo(app.index_buf) orelse break :pass;
-                    const mesh_pipe = gctx.lookupResource(app.main_pipe) orelse break :pass;
+                    const edge_rend_pipe = gctx.lookupResource(app.edge_rend_pipe) orelse break :pass;
+                    const img_rend_pipe = gctx.lookupResource(app.img_rend_pipe) orelse break :pass;
                     const depth_texv = gctx.lookupResource(app.depth_texv) orelse break :pass;
-
+                    // image specific objects
+                    const edge_rend_bg = gctx.lookupResource(app.edge_rend_bg.?) orelse break :pass;
                     const img_rend_bg = gctx.lookupResource(app.img_rend_bg.?) orelse break :pass;
 
                     const pass = zgpu.beginRenderPassSimple(encoder, .clear, swapchain_texv, null, depth_texv, 1.0);
                     defer zgpu.endReleasePass(pass);
 
+                    const mem = gctx.uniformsAllocate(MeshUniforms, 1);
+                    mem.slice[0] = .{
+                        .object_to_world = zm.transpose(object_to_world),
+                        .object_to_world_edge = zm.transpose(object_to_world_edge),
+                        .world_to_clip = zm.transpose(cam_world_to_clip),
+                    };
+
                     pass.setVertexBuffer(0, vb_info.gpuobj.?, 0, vb_info.size);
                     pass.setIndexBuffer(ib_info.gpuobj.?, .uint32, 0, ib_info.size);
-                    pass.setPipeline(mesh_pipe);
-                    {
-                        const mem = gctx.uniformsAllocate(MeshUniforms, 1);
-                        mem.slice[0] = .{
-                            .object_to_world = zm.transpose(object_to_world),
-                            .world_to_clip = zm.transpose(cam_world_to_clip),
-                        };
-                        pass.setBindGroup(0, img_rend_bg, &.{mem.offset});
-                    }
+
+                    pass.setPipeline(edge_rend_pipe);
+                    pass.setBindGroup(0, edge_rend_bg, &.{mem.offset});
+                    pass.drawIndexed(6, 1, 0, 0, 0);
+
+                    pass.setPipeline(img_rend_pipe);
+                    pass.setBindGroup(0, img_rend_bg, &.{mem.offset});
                     pass.drawIndexed(6, 1, 0, 0, 0);
                 }
             }
@@ -494,11 +626,9 @@ pub fn main() !void {
         gctx.submit(&.{commands});
 
         if (gctx.present() == .swap_chain_resized) {
-            // Release old depth texture.
+            // resize depth buffer
             gctx.releaseResource(app.depth_texv);
             gctx.destroyResource(app.depth_tex);
-
-            // Create a new depth texture to match the new window size.
             const depth = createDepthTexture(gctx);
             app.depth_tex = depth.tex;
             app.depth_texv = depth.texv;
