@@ -306,8 +306,21 @@ fn openNeighborImage(offset: i32) !void {
     if (app.img_path.str.len == 0) {
         return;
     }
-    var dir_listing = DirList.init(app.allocator);
-    const ext_set = try file_dlg.createExtSet(app.allocator, &img_exts);
+
+    //const allocator = app.allocator;
+
+    //var buffer: [4096]u8 = undefined;
+    //var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    //const allocator = fba.allocator();
+
+    var sfa = std.heap.stackFallback(4096, app.allocator);
+    const allocator = sfa.get();
+
+    var dir_listing = DirList.init(allocator);
+    defer dir_listing.deinit();
+    const ext_set = try file_dlg.createExtSet(allocator, &img_exts);
+    defer allocator.destroy(ext_set);
+
     const img_dpath = std.fs.path.dirname(app.img_path.str).?;
     const img_fname = std.fs.path.basename(app.img_path.str);
     std.debug.print("img_dpath={s}, img_fname={s}\n", .{ img_dpath, img_fname });
@@ -316,8 +329,7 @@ fn openNeighborImage(offset: i32) !void {
     for (0.., dir_listing.name_list.items) |i, fname| {
         if (std.mem.eql(u8, img_fname, fname.str)) {
             if (i < dir_listing.name_list.items.len - 1) {
-                next_fpath = PathStr{};
-                next_fpath.?.set(img_dpath);
+                next_fpath = PathStr.init(img_dpath);
                 next_fpath.?.concat("/");
                 next_fpath.?.concat(dir_listing.name_list.items[i + 1].str);
                 std.debug.print("found next_fpath={s}\n", .{next_fpath.?.str});
