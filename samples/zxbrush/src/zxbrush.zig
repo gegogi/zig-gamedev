@@ -324,7 +324,7 @@ fn openNeighborImage(offset: i32) !void {
     const img_dpath = std.fs.path.dirname(app.img_path.str).?;
     const img_fname = std.fs.path.basename(app.img_path.str);
     std.debug.print("img_dpath={s}, img_fname={s}\n", .{ img_dpath, img_fname });
-    try dir_listing.populate(img_dpath, false, ext_set);
+    try dir_listing.populate(img_dpath, false, ext_set, (offset < 0));
     var next_fpath: ?PathStr = null;
     for (0.., dir_listing.name_list.items) |i, fname| {
         if (std.mem.eql(u8, img_fname, fname.str)) {
@@ -447,26 +447,35 @@ fn updateGUI() !void {
     }
 }
 
+var prevOnKey: ?zglfw.Window.KeyFn = null;
+var prevOnScroll: ?zglfw.Window.ScrollFn = null;
+
 fn onKey(window: *zglfw.Window, key: zglfw.Key, scancode: i32, action: zglfw.Action, mods: zglfw.Mods) callconv(.C) void {
-    _ = window;
-    _ = scancode;
+    var handled: bool = false;
     var openImageOffset: i32 = 0;
     if (key == .left or key == .comma) {
         if (action == .press) {
-            openImageOffset = if (mods.shift) 5 else 1;
+            openImageOffset = if (mods.shift) -5 else -1;
         }
     } else if (key == .right or key == .period) {
         if (action == .press) {
-            openImageOffset = if (mods.shift) -5 else -1;
+            openImageOffset = if (mods.shift) 5 else 1;
         }
     }
     if (openImageOffset != 0) {
         openNeighborImage(openImageOffset) catch {};
+        handled = true;
+    }
+
+    if (!handled) {
+        if (prevOnKey != null) {
+            prevOnKey.?(window, key, scancode, action, mods);
+        }
     }
 }
 
-fn onMouseScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void {
-    _ = xoffset;
+fn onScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void {
+    var handled: bool = false;
     const rbutton_state = window.getMouseButton(.right);
     if (rbutton_state == .press or rbutton_state == .repeat) {
         var openImageOffset: i32 = 0;
@@ -477,14 +486,21 @@ fn onMouseScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C)
         }
         if (openImageOffset != 0) {
             openNeighborImage(openImageOffset) catch {};
+            handled = true;
+        }
+    }
+
+    if (!handled) {
+        if (prevOnScroll != null) {
+            prevOnScroll.?(window, xoffset, yoffset);
         }
     }
 }
 
 pub fn main() !void {
-    var allocator_state = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = allocator_state.deinit();
-    const allocator = allocator_state.allocator();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
     try zglfw.init();
     defer zglfw.terminate();
@@ -552,7 +568,8 @@ pub fn main() !void {
         file_dlg_obj = try file_dlg.FileDialog.create(allocator, "File Dialog", &img_exts, false, openImage);
     }
 
-    _ = window.setKeyCallback(onKey);
+    prevOnKey = window.setKeyCallback(onKey);
+    prevOnScroll = window.setScrollCallback(onScroll);
 
     while (!window.shouldClose() and window.getKey(.escape) != .press) {
         zglfw.pollEvents();

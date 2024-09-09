@@ -23,6 +23,15 @@ pub fn StrWithBuf(comptime N: u32) type {
         }
 
         pub fn init(s: []const u8) Self {
+            // const empty_str: []u8 = &[_]u8{};
+            // const empty_str_z: [:0]u8 = &[_:0]u8{};
+            // const c_empty_str: []const u8 = &[_]u8{};
+            // const c_empty_str_z: [:0]const u8 = &[_:0]u8{};
+            // _ = empty_str;
+            // _ = empty_str_z;
+            // _ = c_empty_str;
+            // _ = c_empty_str_z;
+
             var self = Self{};
             self.set(s);
             return self;
@@ -79,6 +88,10 @@ fn pathStrLessThan(_: void, a: *PathStr, b: *PathStr) bool {
     return (std.mem.order(u8, a.str, b.str) == .lt);
 }
 
+fn pathStrGreaterThan(_: void, a: *PathStr, b: *PathStr) bool {
+    return (std.mem.order(u8, a.str, b.str) == .gt);
+}
+
 pub const DirList = struct {
     allocator: Allocator,
     name_list: std.ArrayList(*PathStr) = undefined,
@@ -106,7 +119,7 @@ pub const DirList = struct {
         self.is_populated = false;
     }
 
-    pub fn populate(self: *Self, dpath: []const u8, add_sub_dirs: bool, ext_set: ?*ExtSet) !void {
+    pub fn populate(self: *Self, dpath: []const u8, add_sub_dirs: bool, ext_set: ?*ExtSet, reversed: bool) !void {
         self.is_populated = true;
         if (add_sub_dirs) {
             const par_dir = try self.allocator.create(PathStr);
@@ -139,7 +152,12 @@ pub const DirList = struct {
         if (native_os == .windows) {
             // list all drives
         }
-        std.mem.sort(*PathStr, self.name_list.items, {}, pathStrLessThan);
+
+        if (reversed) {
+            std.mem.sort(*PathStr, self.name_list.items, {}, pathStrGreaterThan);
+        } else {
+            std.mem.sort(*PathStr, self.name_list.items, {}, pathStrLessThan);
+        }
     }
 };
 
@@ -221,7 +239,7 @@ pub const FileDialog = struct {
         if (ui_opened) {
             //const cur_dir_text = self.cur_dir;
             if (!self.cur_dir_listing.is_populated) {
-                try self.cur_dir_listing.populate(self.cur_dir.str, true, self.exts);
+                try self.cur_dir_listing.populate(self.cur_dir.str, true, self.exts, false);
             }
             zgui.text("{s}", .{self.cur_dir.str});
             if (zgui.beginListBox("Items", .{})) {
