@@ -22,7 +22,14 @@ pub fn StrWithBuf(comptime N: u32) type {
             return [N]u8;
         }
 
-        pub fn init(s: []const u8) Self {
+        // 포인터가 무효화 되므로 사용하지 않는다.
+        // pub fn init(s: []const u8) Self {
+        //     var self = Self{};
+        //     self.set(s);
+        //     return self;
+        // }
+
+        pub fn set(self: *Self, s: []const u8) void {
             // const empty_str: []u8 = &[_]u8{};
             // const empty_str_z: [:0]u8 = &[_:0]u8{};
             // const c_empty_str: []const u8 = &[_]u8{};
@@ -32,12 +39,6 @@ pub fn StrWithBuf(comptime N: u32) type {
             // _ = c_empty_str;
             // _ = c_empty_str_z;
 
-            var self = Self{};
-            self.set(s);
-            return self;
-        }
-
-        pub fn set(self: *Self, s: []const u8) void {
             std.debug.assert(s.len < N);
             mem.copyForwards(u8, &self.buf, s);
             self.buf[s.len] = 0;

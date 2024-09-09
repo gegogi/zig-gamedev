@@ -42,6 +42,8 @@ const App = struct {
     window: *zglfw.Window,
     gctx: *zgpu.GraphicsContext,
 
+    resetViewScaleOnClear: bool = false,
+
     vertex_buf: zgpu.BufferHandle = undefined,
     index_buf: zgpu.BufferHandle = undefined,
     depth_tex: zgpu.TextureHandle = undefined,
@@ -55,6 +57,7 @@ const App = struct {
 
     img_w: u32 = 0,
     img_h: u32 = 0,
+    img_view_scale: f32 = 1.0,
     img_path: PathStr = undefined,
     img_tex: ?zgpu.TextureHandle = null,
     img_texv: ?zgpu.TextureViewHandle = null,
@@ -180,6 +183,9 @@ const App = struct {
             self.img_tex = null;
         }
         self.img_path.set("");
+        if (self.resetViewScaleOnClear) {
+            self.img_view_scale = 1.0;
+        }
         self.img_w = 0;
         self.img_h = 0;
     }
@@ -283,7 +289,7 @@ fn openImage(fpath: [:0]const u8, is_saving: bool) !void {
 
     app.clearImage();
 
-    const useSdl = true;
+    const useSdl = false;
     if (is_saving) {
         // TODO : implement save
     } else {
@@ -299,6 +305,13 @@ fn openImage(fpath: [:0]const u8, is_saving: bool) !void {
     }
 
     app.img_path.set(fpath);
+
+    const dpath = std.fs.path.dirname(fpath) orelse "";
+    if (dpath.len != 0) {
+        var dir = try std.fs.openDirAbsolute(dpath, .{});
+        defer dir.close();
+        try dir.setAsCwd();
+    }
 }
 
 fn openNeighborImage(offset: i32) !void {
@@ -323,16 +336,17 @@ fn openNeighborImage(offset: i32) !void {
 
     const img_dpath = std.fs.path.dirname(app.img_path.str).?;
     const img_fname = std.fs.path.basename(app.img_path.str);
-    std.debug.print("img_dpath={s}, img_fname={s}\n", .{ img_dpath, img_fname });
+    //std.debug.print("img_dpath={s}, img_fname={s}\n", .{ img_dpath, img_fname });
     try dir_listing.populate(img_dpath, false, ext_set, (offset < 0));
     var next_fpath: ?PathStr = null;
     for (0.., dir_listing.name_list.items) |i, fname| {
         if (std.mem.eql(u8, img_fname, fname.str)) {
             if (i < dir_listing.name_list.items.len - 1) {
-                next_fpath = PathStr.init(img_dpath);
+                next_fpath = .{};
+                next_fpath.?.set(img_dpath);
                 next_fpath.?.concat("/");
                 next_fpath.?.concat(dir_listing.name_list.items[i + 1].str);
-                std.debug.print("found next_fpath={s}\n", .{next_fpath.?.str});
+                //std.debug.print("found next_fpath={s}\n", .{next_fpath.?.str});
                 break;
             }
         }
@@ -488,6 +502,10 @@ fn onScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void
             openNeighborImage(openImageOffset) catch {};
             handled = true;
         }
+    } else if (rbutton_state == .release) {
+        if (app.img_path.str.len != 0) {
+            app.img_view_scale += @as(f32, @floatCast(yoffset)) * 0.1;
+        }
     }
 
     if (!handled) {
@@ -564,6 +582,18 @@ pub fn main() !void {
 
     zgui.getStyle().scaleAllSizes(scale_factor);
 
+    {
+        const args = try std.process.argsAlloc(allocator);
+        defer std.process.argsFree(allocator, args);
+        for (0.., args) |i, arg| {
+            if (i == 0) continue;
+            var s: PathStr = undefined;
+            s.set(arg);
+            s.replaceChar('\\', '/');
+            try openImage(s.str_z, false);
+        }
+    }
+
     if (file_dlg_obj == null) {
         file_dlg_obj = try file_dlg.FileDialog.create(allocator, "File Dialog", &img_exts, false, openImage);
     }
@@ -594,8 +624,10 @@ pub fn main() !void {
         //     200.0,
         // );
         // const cam_world_to_clip = zm.mul(cam_world_to_view, cam_view_to_clip);
-        const object_to_world = zm.scaling(@floatFromInt(app.img_w), @floatFromInt(app.img_h), 1.0);
-        const object_to_world_edge = zm.scaling(@floatFromInt(app.img_w + 2), @floatFromInt(app.img_h + 2), 1.0);
+        const img_w: i32 = @intFromFloat(@as(f32, @floatFromInt(app.img_w)) * app.img_view_scale);
+        const img_h: i32 = @intFromFloat(@as(f32, @floatFromInt(app.img_h)) * app.img_view_scale);
+        const object_to_world = zm.scaling(@floatFromInt(img_w), @floatFromInt(img_h), 1.0);
+        const object_to_world_edge = zm.scaling(@floatFromInt(img_w + 2), @floatFromInt(img_h + 2), 1.0);
         const cam_world_to_clip = zm.orthographicLh(@floatFromInt(fb_width), @floatFromInt(fb_height), -1.0, 1.0);
 
         const swapchain_texv = gctx.swapchain.getCurrentTextureView();

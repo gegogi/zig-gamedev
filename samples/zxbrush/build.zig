@@ -13,6 +13,10 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
         .optimize = options.optimize,
     });
 
+    if (options.target.result.os.tag == .windows) {
+        exe.subsystem = .Windows;
+    }
+
     @import("system_sdk").addLibraryPathsTo(exe);
 
     const zglfw = b.dependency("zglfw", .{
@@ -58,6 +62,7 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     exe.root_module.addImport("zstbi", zstbi.module("root"));
     exe.linkLibrary(zstbi.artifact("zstbi"));
 
+    // SDL2_image
     const zsdl = b.dependency("zsdl", .{});
     exe.root_module.addImport("zsdl2", zsdl.module("zsdl2"));
     exe.root_module.addImport("zsdl2_image", zsdl.module("zsdl2_image"));
@@ -66,19 +71,13 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     @import("zsdl").link_SDL2_image(exe);
     const sdl2_libs_path = b.dependency("sdl2-prebuilt", .{}).path("").getPath(b);
 
-    std.debug.print("sd2_libs_path={s}\n", .{sdl2_libs_path});
-
     @import("zsdl").addLibraryPathsTo(sdl2_libs_path, exe);
     @import("zsdl").addRPathsTo(sdl2_libs_path, exe);
 
     if (@import("zsdl").install_SDL2(b, options.target.result, sdl2_libs_path, .bin)) |install_sdl2_step| {
-        //std.debug.print("SDL2 installed\n", .{});
-        //install_sdl2_step.dump(std.io.getStdErr());
         b.getInstallStep().dependOn(install_sdl2_step);
     }
     if (@import("zsdl").install_SDL2_image(b, options.target.result, sdl2_libs_path, .bin)) |install_sdl2_image_step| {
-        //std.debug.print("SDL2_image installed\n", .{});
-        //install_sdl2_image_step.dump(std.io.getStdErr());
         b.getInstallStep().dependOn(install_sdl2_image_step);
     }
 
