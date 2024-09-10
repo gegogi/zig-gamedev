@@ -1279,7 +1279,17 @@ pub fn imageInfoToTextureFormat(num_components: u32, bytes_per_component: u32, i
             if (num_components == 4) return .rgba8_unorm;
         } else {
             // TODO: Looks like wgpu does not support 16 bit unorm formats.
-            unreachable;
+            //////////////////////////////////////////
+            // modified by gegogi
+            //unreachable;
+            //return .undef;
+            if (num_components == 1) return .r16_float;
+            if (num_components == 2) return .rg16_float;
+            if (num_components == 4) return .rgba16_float;
+            //////////////////////////////////////////
+            // original
+            //unreachable;
+            //////////////////////////////////////////
         }
     }
     unreachable;

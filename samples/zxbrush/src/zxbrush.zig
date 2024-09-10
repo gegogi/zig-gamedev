@@ -13,11 +13,17 @@ const wgsl = @import("zxbrush_wgsl.zig");
 
 const content_dir = @import("build_options").content_dir;
 const window_title = "ZXBrush";
-const img_exts: [2][]const u8 = .{ ".png", ".jpg" };
+const useSdl = false;
+// stbi supported set
+const stbi_img_exts: [10][]const u8 = .{ ".jpg", ".jpeg", ".png", ".tga", ".bmp", ".psd", ".gif", ".hdr", ".pic", ".pnm" };
+// sdl supported set
+const sdl_img_exts: [12][]const u8 = .{ ".bmp", ".gif", ".jpg", ".jpeg", ".lbm", ".pcx", ".png", ".pnm", ".qoi", ".tga", ".xcf", ".xpm" };
+const img_exts: []const []const u8 = if (useSdl) &sdl_img_exts else &stbi_img_exts;
 
 const Allocator = std.mem.Allocator;
 const PathStr = file_dlg.PathStr;
 const DirList = file_dlg.DirList;
+const PathStrList = std.ArrayList(*PathStr);
 
 const Vertex = extern struct {
     position: [3]f32,
@@ -37,12 +43,26 @@ const MeshUniforms = struct {
     world_to_clip: zm.Mat,
 };
 
+const ImageFit = enum(i32) {
+    noFit = 0,
+    width,
+    height,
+    auto,
+};
+
 const App = struct {
     allocator: Allocator,
     window: *zglfw.Window,
     gctx: *zgpu.GraphicsContext,
 
+    // settings
     resetViewScaleOnClear: bool = false,
+    imgFit: ImageFit = .noFit,
+
+    // state
+    img_ext_set: ?*file_dlg.ExtSet = undefined,
+    cur_dir_ls: DirList = undefined,
+    open_file_history: PathStrList = undefined,
 
     vertex_buf: zgpu.BufferHandle = undefined,
     index_buf: zgpu.BufferHandle = undefined,
@@ -66,8 +86,9 @@ const App = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, window: *zglfw.Window, gctx: *zgpu.GraphicsContext) App {
-        var self = App{
+    pub fn create(allocator: Allocator, window: *zglfw.Window, gctx: *zgpu.GraphicsContext) !*Self {
+        var self = try allocator.create(Self);
+        self.* = Self{
             .allocator = allocator,
             .window = window,
             .gctx = gctx,
@@ -148,13 +169,22 @@ const App = struct {
             &self.edge_rend_pipe,
         );
 
+        self.img_ext_set = file_dlg.createExtSet(allocator, img_exts) catch null;
+        self.cur_dir_ls = DirList.init(allocator);
+        self.open_file_history = PathStrList.init(allocator);
         self.img_path.set("");
 
         return self;
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn destroy(self: *Self) void {
         self.clearImage();
+        self.open_file_history.deinit();
+        self.cur_dir_ls.deinit();
+        if (self.img_ext_set != null) {
+            self.img_ext_set.?.clearAndFree();
+            self.allocator.destroy(self.img_ext_set.?);
+        }
         self.gctx.releaseResource(self.edge_rend_pipe);
         self.gctx.releaseResource(self.img_rend_pipe);
         self.gctx.releaseResource(self.edge_rend_bgl);
@@ -163,6 +193,7 @@ const App = struct {
         self.gctx.releaseResource(self.near_samp);
         self.gctx.releaseResource(self.depth_texv);
         self.gctx.destroyResource(self.depth_tex);
+        self.allocator.destroy(self);
     }
 
     pub fn clearImage(self: *Self) void {
@@ -190,7 +221,7 @@ const App = struct {
         self.img_h = 0;
     }
 
-    pub fn setStiImage(self: *Self, image: zstbi.Image) void {
+    pub fn setStiImage(self: *Self, image: zstbi.Image) !void {
         const img_w = image.width;
         const img_h = image.height;
         const img_num_components = image.num_components;
@@ -199,10 +230,10 @@ const App = struct {
         const img_bytes_per_row = image.bytes_per_row;
         const img_data = image.data;
 
-        self.setImageData(img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
+        try self.setImageData(img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
     }
 
-    pub fn setSdlImage(self: *Self, image: *sdl.Surface) void {
+    pub fn setSdlImage(self: *Self, image: *sdl.Surface) !void {
         const img_w: u32 = @intCast(image.w);
         const img_h: u32 = @intCast(image.h);
 
@@ -222,12 +253,15 @@ const App = struct {
         const img_data_len = img_h * img_bytes_per_row;
         const img_data = @as([*]u8, @ptrCast(image.pixels))[0..img_data_len];
 
-        self.setImageData(img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
+        try self.setImageData(img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
     }
 
-    fn setImageData(self: *Self, w: u32, h: u32, num_componenets: u32, bytes_per_component: u32, is_hdr: bool, bytes_per_row: u32, data: []const u8) void {
+    fn setImageData(self: *Self, w: u32, h: u32, num_components: u32, bytes_per_component: u32, is_hdr: bool, bytes_per_row: u32, data: []const u8) !void {
         self.img_w = w;
         self.img_h = h;
+
+        const tex_format = zgpu.imageInfoToTextureFormat(num_components, bytes_per_component, is_hdr);
+        if (tex_format == .undef) return error.FormatNotSupported;
 
         self.img_tex = self.gctx.createTexture(.{
             .usage = .{ .texture_binding = true, .copy_dst = true },
@@ -236,11 +270,7 @@ const App = struct {
                 .height = h,
                 .depth_or_array_layers = 1,
             },
-            .format = zgpu.imageInfoToTextureFormat(
-                num_componenets,
-                bytes_per_component,
-                is_hdr,
-            ),
+            .format = tex_format,
             .mip_level_count = 1,
         });
         self.img_texv = self.gctx.createTextureView(self.img_tex.?, .{});
@@ -278,9 +308,81 @@ const App = struct {
             self.window.setSize(win_size[0], win_size[1]);
         }
     }
+
+    fn onOpenImage(self: *Self, fpath: []const u8) !void {
+        self.img_path.set(fpath);
+        const dpath = std.fs.path.dirname(fpath) orelse "";
+        if (dpath.len == 0) return;
+
+        if (!self.cur_dir_ls.is_populated or !std.mem.eql(u8, self.cur_dir_ls.dpath.str, dpath)) {
+            var dir = try std.fs.openDirAbsolute(dpath, .{});
+            defer dir.close();
+            try dir.setAsCwd();
+            std.debug.print("chdir: {s}", .{dpath});
+            self.cur_dir_ls.reset();
+            try self.cur_dir_ls.populate(dpath, false, self.img_ext_set);
+        }
+
+        const fpath_str = try self.allocator.create(PathStr);
+        fpath_str.*.set(fpath);
+        try self.open_file_history.insert(0, fpath_str);
+
+        // remove dups
+        var i: usize = 1;
+        var hist = &self.open_file_history;
+        while (i < hist.items.len) {
+            const fpath_in_hist = hist.items[i].str;
+            if (i >= 5 or std.mem.eql(u8, fpath, fpath_in_hist)) {
+                const removed_fpath = hist.orderedRemove(i);
+                self.allocator.destroy(removed_fpath);
+                continue;
+            }
+            i += 1;
+        }
+
+        var hist_fpath_str: PathStr = undefined;
+        const hist_fpath = getHistoryFilePath(&hist_fpath_str);
+        try savePathStrList(hist, hist_fpath);
+    }
 };
 
-var app: App = undefined;
+fn getHistoryFilePath(hist_fpath_str: *PathStr) []const u8 {
+    const exe_dir = std.fs.selfExeDirPath(hist_fpath_str.buf[0..]) catch ".";
+    hist_fpath_str.setLen(exe_dir.len);
+    hist_fpath_str.replaceChar('\\', '/');
+    hist_fpath_str.concat("/history.txt");
+    return hist_fpath_str.str;
+}
+
+fn loadPathStrList(allocator: Allocator, str_list: *PathStrList, fpath: []const u8) !void {
+    var hist_file = try std.fs.openFileAbsolute(fpath, .{ .mode = .read_only });
+    defer hist_file.close();
+    var buf_reader = std.io.bufferedReader(hist_file.reader());
+    var reader = buf_reader.reader();
+
+    var line_buf: [1024]u8 = undefined;
+    while (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
+        const line_str = try allocator.create(PathStr);
+        line_str.*.set(line);
+        line_str.*.trimRight();
+        try str_list.append(line_str);
+    }
+}
+
+fn savePathStrList(str_list: *PathStrList, fpath: []const u8) !void {
+    var hist_file = try std.fs.createFileAbsolute(fpath, .{});
+    defer hist_file.close();
+    var buf_writer = std.io.bufferedWriter(hist_file.writer());
+    var writer = buf_writer.writer();
+
+    for (str_list.items) |path_str| {
+        _ = try writer.write(path_str.*.str);
+        _ = try writer.write("\n");
+    }
+    try buf_writer.flush();
+}
+
+var app: *App = undefined;
 var file_dlg_obj: ?*file_dlg.FileDialog = null;
 var file_dlg_open: bool = false;
 
@@ -289,28 +391,31 @@ fn openImage(fpath: [:0]const u8, is_saving: bool) !void {
 
     app.clearImage();
 
-    const useSdl = false;
+    var openImageFailed = false;
     if (is_saving) {
         // TODO : implement save
     } else {
         if (useSdl) {
             const image = sdl_image.load(@ptrCast(fpath)) catch unreachable;
             defer image.free();
-            app.setSdlImage(image);
+            app.setSdlImage(image) catch blk: {
+                openImageFailed = true;
+                break :blk {};
+            };
         } else {
             var image = try zstbi.Image.loadFromFile(@ptrCast(fpath), 4);
             defer image.deinit();
-            app.setStiImage(image);
+            app.setStiImage(image) catch blk: {
+                openImageFailed = true;
+                break :blk {};
+            };
         }
     }
 
-    app.img_path.set(fpath);
-
-    const dpath = std.fs.path.dirname(fpath) orelse "";
-    if (dpath.len != 0) {
-        var dir = try std.fs.openDirAbsolute(dpath, .{});
-        defer dir.close();
-        try dir.setAsCwd();
+    if (openImageFailed) {
+        std.debug.print("failed to open image: {s}\n", .{fpath});
+    } else {
+        try app.onOpenImage(fpath);
     }
 }
 
@@ -320,34 +425,38 @@ fn openNeighborImage(offset: i32) !void {
         return;
     }
 
-    //const allocator = app.allocator;
-
-    //var buffer: [4096]u8 = undefined;
-    //var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    //const allocator = fba.allocator();
-
-    var sfa = std.heap.stackFallback(4096, app.allocator);
-    const allocator = sfa.get();
-
-    var dir_listing = DirList.init(allocator);
-    defer dir_listing.deinit();
-    const ext_set = try file_dlg.createExtSet(allocator, &img_exts);
-    defer allocator.destroy(ext_set);
-
-    const img_dpath = std.fs.path.dirname(app.img_path.str).?;
+    const img_dpath = std.fs.path.dirname(app.img_path.str) orelse "";
     const img_fname = std.fs.path.basename(app.img_path.str);
-    //std.debug.print("img_dpath={s}, img_fname={s}\n", .{ img_dpath, img_fname });
-    try dir_listing.populate(img_dpath, false, ext_set, (offset < 0));
     var next_fpath: ?PathStr = null;
-    for (0.., dir_listing.name_list.items) |i, fname| {
-        if (std.mem.eql(u8, img_fname, fname.str)) {
-            if (i < dir_listing.name_list.items.len - 1) {
-                next_fpath = .{};
-                next_fpath.?.set(img_dpath);
-                next_fpath.?.concat("/");
-                next_fpath.?.concat(dir_listing.name_list.items[i + 1].str);
-                //std.debug.print("found next_fpath={s}\n", .{next_fpath.?.str});
-                break;
+    const names = app.cur_dir_ls.name_list.items;
+    const name_count: i32 = @intCast(names.len);
+    var i: i32 = undefined;
+    if (offset > 0) {
+        i = 0;
+        while (i < name_count) : (i += 1) {
+            const fname = names[@intCast(i)].str;
+            if (std.mem.eql(u8, img_fname, fname)) {
+                if (i < name_count - 1) {
+                    next_fpath = .{};
+                    next_fpath.?.set(img_dpath);
+                    next_fpath.?.concat("/");
+                    next_fpath.?.concat(app.cur_dir_ls.name_list.items[@intCast(i + 1)].str);
+                    break;
+                }
+            }
+        }
+    } else {
+        i = name_count - 1;
+        while (i >= 0) : (i -= 1) {
+            const fname = names[@intCast(i)].str;
+            if (std.mem.eql(u8, img_fname, fname)) {
+                if (i > 0) {
+                    next_fpath = .{};
+                    next_fpath.?.set(img_dpath);
+                    next_fpath.?.concat("/");
+                    next_fpath.?.concat(app.cur_dir_ls.name_list.items[@intCast(i - 1)].str);
+                    break;
+                }
             }
         }
     }
@@ -442,6 +551,12 @@ fn updateGUI() !void {
                 file_dlg_open = true;
                 file_dlg_obj.?.is_saving = true;
             }
+            zgui.separator();
+            for (app.open_file_history.items) |path| {
+                if (zgui.menuItem(path.str_z, .{})) {
+                    openImage(path.str_z, false) catch {};
+                }
+            }
             zgui.endMenu();
         }
         if (zgui.beginMenu("Edit", true)) {
@@ -481,17 +596,22 @@ fn onKey(window: *zglfw.Window, key: zglfw.Key, scancode: i32, action: zglfw.Act
         handled = true;
     }
 
-    if (!handled) {
-        if (prevOnKey != null) {
-            prevOnKey.?(window, key, scancode, action, mods);
-        }
+    if (prevOnKey != null) {
+        prevOnKey.?(window, key, scancode, action, mods);
     }
 }
 
 fn onScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void {
     var handled: bool = false;
     const rbutton_state = window.getMouseButton(.right);
-    if (rbutton_state == .press or rbutton_state == .repeat) {
+    const lshift_state = window.getKey(.left_shift);
+    //const rshift_state = window.getKey(.right_shift);
+    if (rbutton_state == .press or rbutton_state == .repeat or lshift_state == .press or lshift_state == .repeat) {
+        if (app.img_path.str.len != 0) {
+            app.img_view_scale += @as(f32, @floatCast(yoffset)) * 0.1;
+            handled = true;
+        }
+    } else if (rbutton_state == .release) {
         var openImageOffset: i32 = 0;
         if (yoffset > 0) {
             openImageOffset = -1;
@@ -502,16 +622,10 @@ fn onScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void
             openNeighborImage(openImageOffset) catch {};
             handled = true;
         }
-    } else if (rbutton_state == .release) {
-        if (app.img_path.str.len != 0) {
-            app.img_view_scale += @as(f32, @floatCast(yoffset)) * 0.1;
-        }
     }
 
-    if (!handled) {
-        if (prevOnScroll != null) {
-            prevOnScroll.?(window, xoffset, yoffset);
-        }
+    if (prevOnScroll != null) {
+        prevOnScroll.?(window, xoffset, yoffset);
     }
 }
 
@@ -556,8 +670,8 @@ pub fn main() !void {
     );
     defer gctx.destroy(allocator);
 
-    app = App.init(allocator, window, gctx);
-    defer app.deinit();
+    app = try App.create(allocator, window, gctx);
+    defer app.destroy();
 
     const scale_factor = scale_factor: {
         const scale = window.getContentScale();
@@ -594,8 +708,12 @@ pub fn main() !void {
         }
     }
 
+    var hist_fpath_str: PathStr = undefined;
+    _ = getHistoryFilePath(&hist_fpath_str);
+    loadPathStrList(allocator, &app.open_file_history, hist_fpath_str.str) catch {};
+
     if (file_dlg_obj == null) {
-        file_dlg_obj = try file_dlg.FileDialog.create(allocator, "File Dialog", &img_exts, false, openImage);
+        file_dlg_obj = try file_dlg.FileDialog.create(allocator, "File Dialog", app.img_ext_set, false, openImage);
     }
 
     prevOnKey = window.setKeyCallback(onKey);

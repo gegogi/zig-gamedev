@@ -41,8 +41,12 @@ pub fn StrWithBuf(comptime N: u32) type {
 
             std.debug.assert(s.len < N);
             mem.copyForwards(u8, &self.buf, s);
-            self.buf[s.len] = 0;
-            self.str = self.buf[0..s.len];
+            self.setLen(s.len);
+        }
+
+        pub fn setLen(self: *Self, len: usize) void {
+            self.buf[len] = 0;
+            self.str = self.buf[0..len];
             self.str_z = @ptrCast(self.str);
         }
 
@@ -69,6 +73,21 @@ pub fn StrWithBuf(comptime N: u32) type {
             }
             return self.str[self.str.len - 1];
         }
+
+        pub fn trimRight(self: *Self) void {
+            var i = self.str.len;
+            while (i > 0) : (i -= 1) {
+                const c = self.buf[i - 1];
+                if (c == '\n' or c == '\t' or c == ' ') {
+                    self.buf[i - 1] = 0;
+                    continue;
+                }
+                break;
+            }
+            self.buf[i] = 0;
+            self.str = self.buf[0..i];
+            self.str_z = @ptrCast(self.str);
+        }
     };
 }
 
@@ -89,12 +108,9 @@ fn pathStrLessThan(_: void, a: *PathStr, b: *PathStr) bool {
     return (std.mem.order(u8, a.str, b.str) == .lt);
 }
 
-fn pathStrGreaterThan(_: void, a: *PathStr, b: *PathStr) bool {
-    return (std.mem.order(u8, a.str, b.str) == .gt);
-}
-
 pub const DirList = struct {
     allocator: Allocator,
+    dpath: PathStr = undefined,
     name_list: std.ArrayList(*PathStr) = undefined,
     is_populated: bool = false,
 
@@ -104,24 +120,29 @@ pub const DirList = struct {
         var self = Self{
             .allocator = allocator,
         };
+        self.dpath.set("");
         self.name_list = @TypeOf(self.name_list).init(allocator);
+        self.is_populated = false;
         return self;
     }
 
     pub fn deinit(self: *Self) void {
+        self.reset();
         self.name_list.deinit();
     }
 
     pub fn reset(self: *Self) void {
+        self.is_populated = false;
         for (self.name_list.items) |item| {
             self.name_list.allocator.destroy(item);
         }
         self.name_list.clearAndFree();
-        self.is_populated = false;
+        self.dpath.set("");
     }
 
-    pub fn populate(self: *Self, dpath: []const u8, add_sub_dirs: bool, ext_set: ?*ExtSet, reversed: bool) !void {
+    pub fn populate(self: *Self, dpath: []const u8, add_sub_dirs: bool, ext_set: ?*ExtSet) !void {
         self.is_populated = true;
+        self.dpath.set(dpath);
         if (add_sub_dirs) {
             const par_dir = try self.allocator.create(PathStr);
             par_dir.set("../");
@@ -154,40 +175,36 @@ pub const DirList = struct {
             // list all drives
         }
 
-        if (reversed) {
-            std.mem.sort(*PathStr, self.name_list.items, {}, pathStrGreaterThan);
-        } else {
-            std.mem.sort(*PathStr, self.name_list.items, {}, pathStrLessThan);
-        }
+        std.mem.sort(*PathStr, self.name_list.items, {}, pathStrLessThan);
     }
 };
 
 pub const FileDialog = struct {
     allocator: Allocator,
     title: MsgStr,
-    exts: *ExtSet,
+    ext_set: ?*ExtSet,
     is_saving: bool,
     file_open_handler: *const fn (fpath: [:0]const u8, is_saving: bool) anyerror!void,
     is_confirmed: bool,
     cur_dir: PathStr,
-    cur_dir_listing: DirList,
+    cur_dir_ls: DirList,
     cur_dir_item: i32,
     cur_file_text: PathStr,
     msg: MsgStr,
 
     const Self = @This();
 
-    pub fn create(allocator: Allocator, title: []const u8, exts: []const []const u8, is_saving: bool, file_open_handler: *const fn (fpath: [:0]const u8, is_saving: bool) anyerror!void) anyerror!*FileDialog {
+    pub fn create(allocator: Allocator, title: []const u8, ext_set: ?*ExtSet, is_saving: bool, file_open_handler: *const fn (fpath: [:0]const u8, is_saving: bool) anyerror!void) !*FileDialog {
         var dlg = try allocator.create(Self);
         dlg.* = Self{
             .allocator = allocator,
             .title = undefined,
-            .exts = try createExtSet(allocator, exts),
+            .ext_set = ext_set,
             .is_saving = is_saving,
             .file_open_handler = file_open_handler,
             .is_confirmed = false,
             .cur_dir = undefined,
-            .cur_dir_listing = DirList.init(allocator),
+            .cur_dir_ls = DirList.init(allocator),
             .cur_dir_item = -1,
             .cur_file_text = undefined,
             .msg = undefined,
@@ -201,9 +218,7 @@ pub const FileDialog = struct {
 
     pub fn destroy(self: *Self) void {
         self.reset(".", "") catch unreachable;
-        self.exts.deinit();
-        self.allocator.destroy(self.exts);
-        self.cur_dir_listing.deinit();
+        self.cur_dir_ls.deinit();
         self.allocator.destroy(self);
     }
 
@@ -220,7 +235,7 @@ pub const FileDialog = struct {
     pub fn reset(self: *Self, cur_dir: []const u8, cur_file_text: []const u8) anyerror!void {
         self.is_confirmed = false;
         try self.set_cur_dir(cur_dir);
-        self.cur_dir_listing.reset();
+        self.cur_dir_ls.reset();
         self.cur_dir_item = -1;
         self.cur_file_text.set(cur_file_text);
         self.msg.set("");
@@ -239,12 +254,12 @@ pub const FileDialog = struct {
         });
         if (ui_opened) {
             //const cur_dir_text = self.cur_dir;
-            if (!self.cur_dir_listing.is_populated) {
-                try self.cur_dir_listing.populate(self.cur_dir.str, true, self.exts, false);
+            if (!self.cur_dir_ls.is_populated) {
+                try self.cur_dir_ls.populate(self.cur_dir.str, true, self.ext_set);
             }
             zgui.text("{s}", .{self.cur_dir.str});
             if (zgui.beginListBox("Items", .{})) {
-                for (0.., self.cur_dir_listing.name_list.items) |i, fname| {
+                for (0.., self.cur_dir_ls.name_list.items) |i, fname| {
                     var selected = (i == self.cur_dir_item);
                     const changed = zgui.selectableStatePtr(fname.str_z, .{ .pselected = &selected, .flags = zgui.SelectableFlags{ .allow_double_click = true } });
                     const hovered = zgui.isItemHovered(.{});
