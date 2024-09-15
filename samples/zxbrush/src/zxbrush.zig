@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const math = std.math;
 const zglfw = @import("zglfw");
@@ -179,6 +180,9 @@ const App = struct {
 
     pub fn destroy(self: *Self) void {
         self.clearImage();
+        for (self.open_file_history.items) |path| {
+            self.allocator.destroy(path);
+        }
         self.open_file_history.deinit();
         self.cur_dir_ls.deinit();
         if (self.img_ext_set != null) {
@@ -324,7 +328,7 @@ const App = struct {
         }
 
         const fpath_str = try self.allocator.create(PathStr);
-        fpath_str.*.set(fpath);
+        fpath_str.set(fpath);
         try self.open_file_history.insert(0, fpath_str);
 
         // remove dups
@@ -363,8 +367,8 @@ fn loadPathStrList(allocator: Allocator, str_list: *PathStrList, fpath: []const 
     var line_buf: [1024]u8 = undefined;
     while (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
         const line_str = try allocator.create(PathStr);
-        line_str.*.set(line);
-        line_str.*.trimRight();
+        line_str.set(line);
+        line_str.trimRight();
         try str_list.append(line_str);
     }
 }
@@ -376,15 +380,25 @@ fn savePathStrList(str_list: *PathStrList, fpath: []const u8) !void {
     var writer = buf_writer.writer();
 
     for (str_list.items) |path_str| {
-        _ = try writer.write(path_str.*.str);
+        _ = try writer.write(path_str.str);
         _ = try writer.write("\n");
     }
     try buf_writer.flush();
 }
 
+var g_allocator: Allocator = undefined;
 var app: *App = undefined;
 var file_dlg_obj: ?*file_dlg.FileDialog = null;
 var file_dlg_open: bool = false;
+var cmd_arg_fpath: ?PathStr = null;
+
+// this is callback used by cocoa framework
+export fn appOpenFile(fpath: [*c]const u8) callconv(.C) c_int {
+    const ret: c_int = 1;
+    cmd_arg_fpath = .{};
+    cmd_arg_fpath.?.set(std.mem.sliceTo(fpath, 0));
+    return ret;
+}
 
 fn openImage(fpath: [:0]const u8, is_saving: bool) !void {
     std.debug.print("opening file: {s}\n", .{fpath});
@@ -632,12 +646,27 @@ fn onScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    g_allocator = gpa.allocator();
 
-    try zglfw.init();
+    if (builtin.os.tag == .macos) {
+        // do nothing because it will be handled by [NSApplication application:openFile:]
+    } else {
+        const args = try std.process.argsAlloc(g_allocator);
+        defer std.process.argsFree(g_allocator, args);
+        for (0.., args) |i, arg| {
+            if (i == 1) {
+                cmd_arg_fpath = .{};
+                cmd_arg_fpath.set(arg);
+                cmd_arg_fpath.replaceChar('\\', '/');
+                break;
+            }
+        }
+    }
+
+    try zglfw.init(); // cocoa app의 경우 [NSApplication run]이 호출되면서 명령 인자가 openFile(s)에 전달된다.
     defer zglfw.terminate();
 
-    zstbi.init(allocator);
+    zstbi.init(g_allocator);
     defer zstbi.deinit();
 
     // set cwd as exe dir
@@ -654,7 +683,7 @@ pub fn main() !void {
     window.setSizeLimits(200, 200, -1, -1);
 
     const gctx = try zgpu.GraphicsContext.create(
-        allocator,
+        g_allocator,
         .{
             .window = window,
             .fn_getTime = @ptrCast(&zglfw.getTime),
@@ -668,9 +697,9 @@ pub fn main() !void {
         },
         .{},
     );
-    defer gctx.destroy(allocator);
+    defer gctx.destroy(g_allocator);
 
-    app = try App.create(allocator, window, gctx);
+    app = try App.create(g_allocator, window, gctx);
     defer app.destroy();
 
     const scale_factor = scale_factor: {
@@ -678,7 +707,7 @@ pub fn main() !void {
         break :scale_factor @max(scale[0], scale[1]);
     };
 
-    zgui.init(allocator);
+    zgui.init(g_allocator);
     defer zgui.deinit();
 
     _ = zgui.io.addFontFromFile(
@@ -696,24 +725,16 @@ pub fn main() !void {
 
     zgui.getStyle().scaleAllSizes(scale_factor);
 
-    {
-        const args = try std.process.argsAlloc(allocator);
-        defer std.process.argsFree(allocator, args);
-        for (0.., args) |i, arg| {
-            if (i == 0) continue;
-            var s: PathStr = undefined;
-            s.set(arg);
-            s.replaceChar('\\', '/');
-            try openImage(s.str_z, false);
-        }
+    if (cmd_arg_fpath != null) {
+        try openImage(cmd_arg_fpath.?.str_z, false);
     }
 
     var hist_fpath_str: PathStr = undefined;
     _ = getHistoryFilePath(&hist_fpath_str);
-    loadPathStrList(allocator, &app.open_file_history, hist_fpath_str.str) catch {};
+    loadPathStrList(g_allocator, &app.open_file_history, hist_fpath_str.str) catch {};
 
     if (file_dlg_obj == null) {
-        file_dlg_obj = try file_dlg.FileDialog.create(allocator, "File Dialog", app.img_ext_set, false, openImage);
+        file_dlg_obj = try file_dlg.FileDialog.create(g_allocator, "File Dialog", app.img_ext_set, false, openImage);
     }
 
     prevOnKey = window.setKeyCallback(onKey);

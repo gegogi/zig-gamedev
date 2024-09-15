@@ -448,6 +448,51 @@ static GLFWbool initializeTIS(void)
         _glfwRestoreVideoModeCocoa(_glfw.monitors[i]);
 }
 
+//////////////////////////////////////////////////
+// modified by gegogi
+void *appModHandle = NULL;
+typedef int (*PFN_appOpenFile)(const char*);
+PFN_appOpenFile pfn_appOpenFile = NULL;
+
+void ensureAppOpenFileFunc()
+{
+    if (!appModHandle) {
+        appModHandle = _glfwPlatformLoadModule(NULL);
+        NSLog(@"appModHandle=%p", appModHandle);
+    }
+    if (!pfn_appOpenFile) {
+        pfn_appOpenFile = (PFN_appOpenFile)_glfwPlatformGetModuleSymbol(appModHandle, "appOpenFile");
+        NSLog(@"pfn_appOpenFile=%p", pfn_appOpenFile);
+    }
+}
+
+- (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename
+{
+    ensureAppOpenFileFunc();
+    NSLog(@"application:openFile:%s\n", [filename UTF8String]);
+    if (pfn_appOpenFile) {
+        return (*pfn_appOpenFile)([filename UTF8String]);
+    }
+    return NO;
+}
+
+- (void)application:(NSApplication *)sender openFiles:(NSArray<NSString *>*)filenames
+{
+    ensureAppOpenFileFunc();
+    NSEnumerator *e = [filenames objectEnumerator];
+    NSString *s = nil;
+    int i = 0;
+    while (s = (NSString*)[e nextObject]) {
+        NSLog(@"application:openFiles:%d,%s\n", i, [s UTF8String]);
+        if (pfn_appOpenFile) {
+            (*pfn_appOpenFile)([s UTF8String]);
+            break;
+        }
+        ++i;
+    }
+}
+//////////////////////////////////////////////////
+
 @end // GLFWApplicationDelegate
 
 

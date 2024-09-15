@@ -35,6 +35,10 @@
 !*.hiplc
 !*.dds
 
+!*.plist
+!CodeResources
+!PkgInfo
+
 !.ignore
 !.vimrc
 !.gitkeep
@@ -52,3 +56,6 @@ backup
 
 # Ignore some special system files
 *.DS_Store
+
+imgui.ini
+history.txt
