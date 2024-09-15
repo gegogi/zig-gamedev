@@ -46,9 +46,11 @@ const MeshUniforms = struct {
 
 const ImageFit = enum(i32) {
     noFit = 0,
-    width,
-    height,
-    auto,
+    width = 1,
+    height = 2,
+    auto = 3,
+    resizeWin = 4,
+    count = 5,
 };
 
 const App = struct {
@@ -57,12 +59,13 @@ const App = struct {
     gctx: *zgpu.GraphicsContext,
 
     // settings
-    resetViewScaleOnClear: bool = false,
-    imgFit: ImageFit = .noFit,
+    reset_view_scale_on_clear: bool = false,
+    img_fit: ImageFit = .noFit,
 
     // state
     img_ext_set: ?*file_dlg.ExtSet = undefined,
     cur_dir_ls: DirList = undefined,
+    config: std.StringHashMap(*PathStr) = undefined,
     open_file_history: PathStrList = undefined,
 
     vertex_buf: zgpu.BufferHandle = undefined,
@@ -172,6 +175,7 @@ const App = struct {
 
         self.img_ext_set = file_dlg.createExtSet(allocator, img_exts) catch null;
         self.cur_dir_ls = DirList.init(allocator);
+        self.config = std.StringHashMap(*PathStr).init(allocator);
         self.open_file_history = PathStrList.init(allocator);
         self.img_path.set("");
 
@@ -180,15 +184,26 @@ const App = struct {
 
     pub fn destroy(self: *Self) void {
         self.clearImage();
+
         for (self.open_file_history.items) |path| {
             self.allocator.destroy(path);
         }
         self.open_file_history.deinit();
+
+        var cfg_iter = self.config.iterator();
+        while (cfg_iter.next()) |kv| {
+            self.allocator.free(kv.key_ptr.*);
+            self.allocator.destroy(kv.value_ptr.*);
+        }
+        self.config.deinit();
+
         self.cur_dir_ls.deinit();
+
         if (self.img_ext_set != null) {
             self.img_ext_set.?.clearAndFree();
             self.allocator.destroy(self.img_ext_set.?);
         }
+
         self.gctx.releaseResource(self.edge_rend_pipe);
         self.gctx.releaseResource(self.img_rend_pipe);
         self.gctx.releaseResource(self.edge_rend_bgl);
@@ -218,7 +233,7 @@ const App = struct {
             self.img_tex = null;
         }
         self.img_path.set("");
-        if (self.resetViewScaleOnClear) {
+        if (self.reset_view_scale_on_clear) {
             self.img_view_scale = 1.0;
         }
         self.img_w = 0;
@@ -348,39 +363,106 @@ const App = struct {
         const hist_fpath = getHistoryFilePath(&hist_fpath_str);
         try savePathStrList(hist, hist_fpath);
     }
+
+    fn updateConfigMap(self: *Self) !void {
+        var buf: [1024]u8 = undefined;
+
+        if (self.config.getEntry("reset_view_scale_on_clear")) |kv| {
+            const s = try std.fmt.bufPrintZ(&buf, "{d}", .{@intFromBool(self.reset_view_scale_on_clear)});
+            kv.value_ptr.*.set(s);
+        }
+        if (self.config.getEntry("img_fit")) |kv| {
+            const s = try std.fmt.bufPrintZ(&buf, "{d}", .{@intFromEnum(self.img_fit)});
+            kv.value_ptr.*.set(s);
+        }
+    }
+
+    fn applyConfigMap(self: *Self) void {
+        if (self.config.get("reset_view_scale_on_clear")) |v| {
+            self.reset_view_scale_on_clear = (std.fmt.parseInt(u32, v.str, 10) catch 0 != 0);
+        }
+        if (self.config.get("img_fit")) |v| {
+            self.img_fit = @enumFromInt(std.fmt.parseInt(u32, v.str, 10) catch 0);
+        }
+    }
 };
 
-fn getHistoryFilePath(hist_fpath_str: *PathStr) []const u8 {
-    const exe_dir = std.fs.selfExeDirPath(hist_fpath_str.buf[0..]) catch ".";
-    hist_fpath_str.setLen(exe_dir.len);
-    hist_fpath_str.replaceChar('\\', '/');
-    hist_fpath_str.concat("/history.txt");
-    return hist_fpath_str.str;
+fn getHistoryFilePath(path: *PathStr) []const u8 {
+    const exe_dir = std.fs.selfExeDirPath(path.buf[0..]) catch ".";
+    path.setLen(exe_dir.len);
+    path.replaceChar('\\', '/');
+    path.concat("/history.txt");
+    return path.str;
+}
+
+fn getConfigFilePath(path: *PathStr) []const u8 {
+    const exe_dir = std.fs.selfExeDirPath(path.buf[0..]) catch ".";
+    path.setLen(exe_dir.len);
+    path.replaceChar('\\', '/');
+    path.concat("/config.txt");
+    return path.str;
 }
 
 fn loadPathStrList(allocator: Allocator, str_list: *PathStrList, fpath: []const u8) !void {
-    var hist_file = try std.fs.openFileAbsolute(fpath, .{ .mode = .read_only });
-    defer hist_file.close();
-    var buf_reader = std.io.bufferedReader(hist_file.reader());
+    var file_obj = try std.fs.openFileAbsolute(fpath, .{ .mode = .read_only });
+    defer file_obj.close();
+    var buf_reader = std.io.bufferedReader(file_obj.reader());
     var reader = buf_reader.reader();
 
     var line_buf: [1024]u8 = undefined;
     while (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
         const line_str = try allocator.create(PathStr);
         line_str.set(line);
-        line_str.trimRight();
         try str_list.append(line_str);
     }
 }
 
 fn savePathStrList(str_list: *PathStrList, fpath: []const u8) !void {
-    var hist_file = try std.fs.createFileAbsolute(fpath, .{});
-    defer hist_file.close();
-    var buf_writer = std.io.bufferedWriter(hist_file.writer());
+    var file_obj = try std.fs.createFileAbsolute(fpath, .{});
+    defer file_obj.close();
+    var buf_writer = std.io.bufferedWriter(file_obj.writer());
     var writer = buf_writer.writer();
 
     for (str_list.items) |path_str| {
         _ = try writer.write(path_str.str);
+        _ = try writer.write("\n");
+    }
+    try buf_writer.flush();
+}
+
+fn loadPathStrMap(allocator: Allocator, str_map: *std.StringHashMap(*PathStr), fpath: []const u8) !void {
+    var file_obj = try std.fs.openFileAbsolute(fpath, .{ .mode = .read_only });
+    defer file_obj.close();
+    var buf_reader = std.io.bufferedReader(file_obj.reader());
+    var reader = buf_reader.reader();
+
+    var line_buf: [1024]u8 = undefined;
+    while (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
+        const key = std.mem.sliceTo(line, '=');
+        const value = line[key.len + 1 ..];
+        const key_str = try allocator.dupe(u8, key);
+        const value_str = try allocator.create(PathStr);
+        value_str.set(value);
+        try str_map.put(key_str, value_str);
+    }
+
+    // var cfg_iter = str_map.iterator();
+    // while (cfg_iter.next()) |kv| {
+    //     std.debug.print("k={s}, v={s}\n", .{ kv.key_ptr.*, kv.value_ptr.*.str });
+    // }
+}
+
+fn savePathStrMap(str_map: *std.StringHashMap(*PathStr), fpath: []const u8) !void {
+    var file_obj = try std.fs.createFileAbsolute(fpath, .{});
+    defer file_obj.close();
+    var buf_writer = std.io.bufferedWriter(file_obj.writer());
+    var writer = buf_writer.writer();
+
+    var cfg_iter = str_map.iterator();
+    while (cfg_iter.next()) |kv| {
+        _ = try writer.write(kv.key_ptr.*);
+        _ = try writer.write("=");
+        _ = try writer.write(kv.value_ptr.*.str);
         _ = try writer.write("\n");
     }
     try buf_writer.flush();
@@ -574,8 +656,23 @@ fn updateGUI() !void {
             zgui.endMenu();
         }
         if (zgui.beginMenu("Edit", true)) {
-            if (zgui.menuItem("Item", .{})) {
-                std.debug.print("Item selected\n", .{});
+            if (zgui.menuItem("Clear", .{})) {
+                app.clearImage();
+            }
+            zgui.endMenu();
+        }
+        if (zgui.beginMenu("Config", true)) {
+            if (zgui.checkbox("Reset View Scale on Clear", .{ .v = &app.reset_view_scale_on_clear })) {
+                // do nothing
+            }
+            const cur_img_fit_str = @tagName(app.img_fit);
+            if (zgui.beginCombo("Image Fit", .{ .preview_value = cur_img_fit_str })) {
+                for (0..@intCast(@intFromEnum(ImageFit.count))) |i| {
+                    if (zgui.selectable(@tagName(@as(ImageFit, @enumFromInt(i))), .{})) {
+                        app.img_fit = @enumFromInt(i);
+                    }
+                }
+                zgui.endCombo();
             }
             zgui.endMenu();
         }
@@ -723,6 +820,11 @@ pub fn main() !void {
     );
     defer zgui.backend.deinit();
 
+    var cfg_fpath_str: PathStr = undefined;
+    _ = getConfigFilePath(&cfg_fpath_str);
+    loadPathStrMap(g_allocator, &app.config, cfg_fpath_str.str) catch {};
+    app.applyConfigMap();
+
     zgui.getStyle().scaleAllSizes(scale_factor);
 
     if (cmd_arg_fpath != null) {
@@ -740,7 +842,7 @@ pub fn main() !void {
     prevOnKey = window.setKeyCallback(onKey);
     prevOnScroll = window.setScrollCallback(onScroll);
 
-    while (!window.shouldClose() and window.getKey(.escape) != .press) {
+    while (!window.shouldClose()) {
         zglfw.pollEvents();
 
         zgui.backend.newFrame(
@@ -834,6 +936,9 @@ pub fn main() !void {
             app.depth_texv = depth.texv;
         }
     }
+
+    try app.updateConfigMap();
+    try savePathStrMap(&app.config, cfg_fpath_str.str);
 
     if (file_dlg_obj != null) {
         file_dlg_obj.?.destroy();

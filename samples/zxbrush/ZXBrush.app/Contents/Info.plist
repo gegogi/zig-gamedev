@@ -37,21 +37,15 @@
 			</array>
 		</dict>
 		<dict>
-			<key>CFBundleTypeOSTypes</key>
-			<array>
-				<string>****</string>
-			</array>
-			<key>LSHandlerRank</key>
-			<string>Default</string>		
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>png</string>
-			</array>
-			<key>CFBundleTypeName</key>
-			<string>PNG Document</string>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
-		</dict>	
+			<key>LSIsAppleDefaultForType</key>
+			<true/>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.jpeg</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>
