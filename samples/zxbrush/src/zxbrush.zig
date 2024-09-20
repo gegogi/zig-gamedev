@@ -46,17 +46,19 @@ const MeshUniforms = struct {
 
 const ImageFit = enum(i32) {
     noFit = 0,
-    width = 1,
-    height = 2,
-    auto = 3,
-    resizeWin = 4,
-    count = 5,
+    osScale,
+    width,
+    height,
+    auto,
+    resizeWin,
+    count,
 };
 
 const App = struct {
     allocator: Allocator,
     window: *zglfw.Window,
     gctx: *zgpu.GraphicsContext,
+    os_scale_factor: f32 = 1.0,
 
     // settings
     reset_view_scale_on_clear: bool = false,
@@ -313,18 +315,54 @@ const App = struct {
             .{ .binding = 0, .buffer_handle = self.gctx.uniforms.buffer, .offset = 0, .size = @sizeOf(MeshUniforms) },
         });
 
-        var win_size = self.window.getSize();
-        var will_resize = false;
-        if (win_size[0] < @as(i32, @intCast(w)) + 2) {
-            win_size[0] = @as(i32, @intCast(w)) + 2;
-            will_resize = true;
+        // var win_size = self.window.getSize();
+        // var will_resize = false;
+        // if (win_size[0] < @as(i32, @intCast(w)) + 2) {
+        //     win_size[0] = @as(i32, @intCast(w)) + 2;
+        //     will_resize = true;
+        // }
+        // if (win_size[1] < @as(i32, @intCast(h)) + 2) {
+        //     win_size[1] = @as(i32, @intCast(h)) + 2;
+        //     will_resize = true;
+        // }
+        // if (will_resize) {
+        //     self.window.setSize(win_size[0], win_size[1]);
+        // }
+    }
+
+    fn updateViewScale(self: *Self, canResizeWin: bool) void {
+        // adjust image scale or window size
+        var fb_width = self.gctx.swapchain_descriptor.width;
+        var fb_height = self.gctx.swapchain_descriptor.height;
+
+        var img_fit = self.img_fit;
+        if (img_fit == .auto) {
+            const img_ratio = @as(f32, @floatFromInt(self.img_w)) / @as(f32, @floatFromInt(self.img_h));
+            const fb_ratio = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatFromInt(fb_height));
+            if (img_ratio >= fb_ratio) {
+                img_fit = .width;
+            } else {
+                img_fit = .height;
+            }
         }
-        if (win_size[1] < @as(i32, @intCast(h)) + 2) {
-            win_size[1] = @as(i32, @intCast(h)) + 2;
-            will_resize = true;
-        }
-        if (will_resize) {
-            self.window.setSize(win_size[0], win_size[1]);
+
+        if (img_fit == .noFit) {
+            self.img_view_scale = 1.0;
+        } else if (img_fit == .osScale) {
+            self.img_view_scale = self.os_scale_factor;
+        } else if (img_fit == .width) {
+            self.img_view_scale = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatFromInt(self.img_w));
+        } else if (img_fit == .height) {
+            self.img_view_scale = @as(f32, @floatFromInt(fb_height)) / @as(f32, @floatFromInt(self.img_h));
+        } else if (img_fit == .resizeWin) {
+            if (canResizeWin) {
+                const win_w = @as(i32, @intFromFloat(@as(f32, @floatFromInt(self.img_w)) * self.os_scale_factor));
+                const win_h = @as(i32, @intFromFloat(@as(f32, @floatFromInt(self.img_h)) * self.os_scale_factor));
+                app.window.setSize(win_w, win_h);
+                fb_width = @intFromFloat(@as(f32, @floatFromInt(win_w)) * self.os_scale_factor);
+                fb_height = @intFromFloat(@as(f32, @floatFromInt(win_h)) * self.os_scale_factor);
+                self.img_view_scale = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatFromInt(self.img_w));
+            }
         }
     }
 
@@ -342,6 +380,7 @@ const App = struct {
             try self.cur_dir_ls.populate(dpath, false, self.img_ext_set);
         }
 
+        // manage history
         const fpath_str = try self.allocator.create(PathStr);
         fpath_str.set(fpath);
         try self.open_file_history.insert(0, fpath_str);
@@ -362,6 +401,8 @@ const App = struct {
         var hist_fpath_str: PathStr = undefined;
         const hist_fpath = getHistoryFilePath(&hist_fpath_str);
         try savePathStrList(hist, hist_fpath);
+
+        self.updateViewScale(true);
     }
 
     fn updateConfigMap(self: *Self) !void {
@@ -665,14 +706,22 @@ fn updateGUI() !void {
             if (zgui.checkbox("Reset View Scale on Clear", .{ .v = &app.reset_view_scale_on_clear })) {
                 // do nothing
             }
+            var comboSelected = false;
             const cur_img_fit_str = @tagName(app.img_fit);
             if (zgui.beginCombo("Image Fit", .{ .preview_value = cur_img_fit_str })) {
                 for (0..@intCast(@intFromEnum(ImageFit.count))) |i| {
                     if (zgui.selectable(@tagName(@as(ImageFit, @enumFromInt(i))), .{})) {
                         app.img_fit = @enumFromInt(i);
+                        app.updateViewScale(true);
+                        // TODO : how to close the parent menu
+                        comboSelected = true;
+                        break;
                     }
                 }
                 zgui.endCombo();
+            }
+            if (comboSelected) {
+                zgui.closeCurrentPopup();
             }
             zgui.endMenu();
         }
@@ -803,6 +852,8 @@ pub fn main() !void {
         const scale = window.getContentScale();
         break :scale_factor @max(scale[0], scale[1]);
     };
+    app.os_scale_factor = scale_factor;
+    std.debug.print("os_scale_factor={d:.2}\n", .{app.os_scale_factor});
 
     zgui.init(g_allocator);
     defer zgui.deinit();
@@ -845,18 +896,16 @@ pub fn main() !void {
     while (!window.shouldClose()) {
         zglfw.pollEvents();
 
-        zgui.backend.newFrame(
-            gctx.swapchain_descriptor.width,
-            gctx.swapchain_descriptor.height,
-        );
+        const fb_width = gctx.swapchain_descriptor.width;
+        const fb_height = gctx.swapchain_descriptor.height;
+
+        zgui.backend.newFrame(fb_width, fb_height);
 
         zgui.setNextWindowPos(.{ .x = 20.0, .y = 20.0, .cond = .first_use_ever });
         zgui.setNextWindowSize(.{ .w = -1.0, .h = -1.0, .cond = .first_use_ever });
 
         try updateGUI();
 
-        const fb_width = gctx.swapchain_descriptor.width;
-        const fb_height = gctx.swapchain_descriptor.height;
         // const cam_world_to_view = zm.lookToLh(zm.loadArr3(.{ 0.0, 0.0, -1.0 }), zm.loadArr3(.{ 0.0, 0.0, 1.0 }), zm.loadArr3{.{ 0.0, 1.0, 0.0 }});
         // const cam_view_to_clip = zm.perspectiveFovLh(
         //     math.pi / @as(f32, 3.0),
@@ -934,6 +983,12 @@ pub fn main() !void {
             const depth = createDepthTexture(gctx);
             app.depth_tex = depth.tex;
             app.depth_texv = depth.texv;
+            const win_size = app.window.getSize();
+            const fb_size = app.window.getFramebufferSize();
+            // hdpi mode 에서는 win_size < fb_size 이다.
+            // fb_size 는 실제 LCD 상의 픽셀 수를 의미한다.
+            std.debug.print("win_size=({d},{d}), fb_size=({d},{d})\n", .{ win_size[0], win_size[1], fb_size[0], fb_size[1] });
+            app.updateViewScale(false);
         }
     }
 
