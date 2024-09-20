@@ -42,6 +42,7 @@
 !.ignore
 !.vimrc
 !.gitkeep
+!.vscode/*
 
 !/libs/system-sdk/**
 !/libs/zgpu/libs/**
@@ -57,5 +58,4 @@ backup
 # Ignore some special system files
 *.DS_Store
 
-imgui.ini
-history.txt
+**/Contents/MacOS/**

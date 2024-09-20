@@ -1,0 +1,30 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build zxbrush",
+            "type": "shell",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "zig build",
+                "copy artifacts",
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "zig build",
+            "type": "shell",
+            "command": "zig build zxbrush --summary all",
+        },
+        {
+            "label": "copy artifacts",
+            "type": "shell",
+            "command": "cp zig-out/bin/zxbrush samples/zxbrush/ZXBrush.app/Contents/MacOS/_zxbrush; cp -R zig-out/bin/zxbrush_content samples/zxbrush/ZXBrush.app/Contents/MacOS",
+        },
+    ]
+}

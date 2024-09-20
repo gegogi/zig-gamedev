@@ -54,6 +54,86 @@ const ImageFit = enum(i32) {
     count,
 };
 
+const ImageObj = struct {
+    w: u32 = 0,
+    h: u32 = 0,
+    tex: zgpu.TextureHandle = undefined,
+    texv: zgpu.TextureViewHandle = undefined,
+
+    fn initWithStiImage(gctx: *zgpu.GraphicsContext, image: zstbi.Image) !ImageObj {
+        const img_w = image.width;
+        const img_h = image.height;
+        const img_num_components = image.num_components;
+        const img_bytes_per_component = image.bytes_per_component;
+        const img_is_hdr = image.is_hdr;
+        const img_bytes_per_row = image.bytes_per_row;
+        const img_data = image.data;
+        return try ImageObj.initData(gctx, img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
+    }
+
+    fn initWithSdlImage(gctx: *zgpu.GraphicsContext, image: *sdl.Surface) !ImageObj {
+        const img_w: u32 = @intCast(image.w);
+        const img_h: u32 = @intCast(image.h);
+
+        std.debug.assert(image.format != null);
+        const img_fmt = image.format.?.*;
+        const img_num_components: u32 = switch (img_fmt) {
+            .argb8888, .rgba8888, .abgr8888, .bgra8888 => 4,
+            .xrgb8888, .rgbx8888, .xbgr8888, .bgrx8888 => 3,
+            else => 3,
+        };
+        const img_is_hdr = false;
+        const img_bytes_per_component: u32 = switch (img_fmt) {
+            .argb8888, .rgba8888, .abgr8888, .bgra8888, .xrgb8888, .rgbx8888, .xbgr8888, .bgrx8888 => 1,
+            else => 1,
+        };
+        const img_bytes_per_row = img_bytes_per_component * img_num_components * img_w;
+        const img_data_len = img_h * img_bytes_per_row;
+        const img_data = @as([*]u8, @ptrCast(image.pixels))[0..img_data_len];
+
+        return try ImageObj.initData(gctx, img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
+    }
+
+    fn initData(gctx: *zgpu.GraphicsContext, w: u32, h: u32, num_components: u32, bytes_per_component: u32, is_hdr: bool, bytes_per_row: u32, data: []const u8) !ImageObj {
+        var self: ImageObj = .{};
+        self.w = w;
+        self.h = h;
+
+        const tex_format = zgpu.imageInfoToTextureFormat(num_components, bytes_per_component, is_hdr);
+        if (tex_format == .undef) return error.FormatNotSupported;
+
+        self.tex = gctx.createTexture(.{
+            .usage = .{ .texture_binding = true, .copy_dst = true },
+            .size = .{
+                .width = w,
+                .height = h,
+                .depth_or_array_layers = 1,
+            },
+            .format = tex_format,
+            .mip_level_count = 1,
+        });
+        self.texv = gctx.createTextureView(self.tex, .{});
+        gctx.queue.writeTexture(
+            .{ .texture = gctx.lookupResource(self.tex).? },
+            .{
+                .bytes_per_row = bytes_per_row,
+                .rows_per_image = h,
+            },
+            .{ .width = w, .height = h },
+            u8,
+            data,
+        );
+        return self;
+    }
+
+    fn deinit(self: *ImageObj, gctx: *zgpu.GraphicsContext) void {
+        gctx.releaseResource(self.texv);
+        gctx.destroyResource(self.tex);
+        self.w = 0;
+        self.h = 0;
+    }
+};
+
 const App = struct {
     allocator: Allocator,
     window: *zglfw.Window,
@@ -70,6 +150,7 @@ const App = struct {
     config: std.StringHashMap(*PathStr) = undefined,
     open_file_history: PathStrList = undefined,
 
+    // env
     vertex_buf: zgpu.BufferHandle = undefined,
     index_buf: zgpu.BufferHandle = undefined,
     depth_tex: zgpu.TextureHandle = undefined,
@@ -81,14 +162,16 @@ const App = struct {
     img_rend_pipe: zgpu.RenderPipelineHandle = undefined,
     edge_rend_pipe: zgpu.RenderPipelineHandle = undefined,
 
-    img_w: u32 = 0,
-    img_h: u32 = 0,
-    img_view_scale: f32 = 1.0,
-    img_path: PathStr = undefined,
-    img_tex: ?zgpu.TextureHandle = null,
-    img_texv: ?zgpu.TextureViewHandle = null,
+    // ui
+    sel_but_img_obj: ImageObj = undefined,
+    line_but_img_obj: ImageObj = undefined,
+
+    img_obj: ?ImageObj = null,
+
     img_rend_bg: ?zgpu.BindGroupHandle = null,
     edge_rend_bg: ?zgpu.BindGroupHandle = null,
+    img_view_scale: f32 = 1.0,
+    img_path: PathStr = undefined,
 
     const Self = @This();
 
@@ -175,6 +258,22 @@ const App = struct {
             &self.edge_rend_pipe,
         );
 
+        var sel_but_img_path: PathStr = undefined;
+        _ = getAppFilePath(&sel_but_img_path, "zxbrush_content/ui_sel_but.png");
+        var line_but_img_path: PathStr = undefined;
+        _ = getAppFilePath(&line_but_img_path, "zxbrush_content/ui_sel_but.png");
+        if (useSdl) {
+            // sdl impl
+        } else {
+            var sel_but_img = try zstbi.Image.loadFromFile(sel_but_img_path.str_z, 4);
+            defer sel_but_img.deinit();
+            self.sel_but_img_obj = try ImageObj.initWithStiImage(self.gctx, sel_but_img);
+
+            var line_but_img = try zstbi.Image.loadFromFile(line_but_img_path.str_z, 4);
+            defer line_but_img.deinit();
+            self.line_but_img_obj = try ImageObj.initWithStiImage(self.gctx, line_but_img);
+        }
+
         self.img_ext_set = file_dlg.createExtSet(allocator, img_exts) catch null;
         self.cur_dir_ls = DirList.init(allocator);
         self.config = std.StringHashMap(*PathStr).init(allocator);
@@ -226,119 +325,40 @@ const App = struct {
             self.gctx.releaseResource(self.img_rend_bg.?);
             self.img_rend_bg = null;
         }
-        if (self.img_texv != null) {
-            self.gctx.releaseResource(self.img_texv.?);
-            self.img_texv = null;
-        }
-        if (self.img_tex != null) {
-            self.gctx.destroyResource(self.img_tex.?);
-            self.img_tex = null;
+        if (self.img_obj != null) {
+            self.img_obj.?.deinit(self.gctx);
+            self.img_obj = null;
         }
         self.img_path.set("");
         if (self.reset_view_scale_on_clear) {
             self.img_view_scale = 1.0;
         }
-        self.img_w = 0;
-        self.img_h = 0;
     }
 
-    pub fn setStiImage(self: *Self, image: zstbi.Image) !void {
-        const img_w = image.width;
-        const img_h = image.height;
-        const img_num_components = image.num_components;
-        const img_bytes_per_component = image.bytes_per_component;
-        const img_is_hdr = image.is_hdr;
-        const img_bytes_per_row = image.bytes_per_row;
-        const img_data = image.data;
-
-        try self.setImageData(img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
-    }
-
-    pub fn setSdlImage(self: *Self, image: *sdl.Surface) !void {
-        const img_w: u32 = @intCast(image.w);
-        const img_h: u32 = @intCast(image.h);
-
-        std.debug.assert(image.format != null);
-        const img_fmt = image.format.?.*;
-        const img_num_components: u32 = switch (img_fmt) {
-            .argb8888, .rgba8888, .abgr8888, .bgra8888 => 4,
-            .xrgb8888, .rgbx8888, .xbgr8888, .bgrx8888 => 3,
-            else => 3,
-        };
-        const img_is_hdr = false;
-        const img_bytes_per_component: u32 = switch (img_fmt) {
-            .argb8888, .rgba8888, .abgr8888, .bgra8888, .xrgb8888, .rgbx8888, .xbgr8888, .bgrx8888 => 1,
-            else => 1,
-        };
-        const img_bytes_per_row = img_bytes_per_component * img_num_components * img_w;
-        const img_data_len = img_h * img_bytes_per_row;
-        const img_data = @as([*]u8, @ptrCast(image.pixels))[0..img_data_len];
-
-        try self.setImageData(img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
-    }
-
-    fn setImageData(self: *Self, w: u32, h: u32, num_components: u32, bytes_per_component: u32, is_hdr: bool, bytes_per_row: u32, data: []const u8) !void {
-        self.img_w = w;
-        self.img_h = h;
-
-        const tex_format = zgpu.imageInfoToTextureFormat(num_components, bytes_per_component, is_hdr);
-        if (tex_format == .undef) return error.FormatNotSupported;
-
-        self.img_tex = self.gctx.createTexture(.{
-            .usage = .{ .texture_binding = true, .copy_dst = true },
-            .size = .{
-                .width = w,
-                .height = h,
-                .depth_or_array_layers = 1,
-            },
-            .format = tex_format,
-            .mip_level_count = 1,
-        });
-        self.img_texv = self.gctx.createTextureView(self.img_tex.?, .{});
-        self.gctx.queue.writeTexture(
-            .{ .texture = self.gctx.lookupResource(self.img_tex.?).? },
-            .{
-                .bytes_per_row = bytes_per_row,
-                .rows_per_image = h,
-            },
-            .{ .width = w, .height = h },
-            u8,
-            data,
-        );
+    fn setImageObj(self: *Self, img_obj: ImageObj) !void {
+        self.img_obj = img_obj;
 
         self.img_rend_bg = self.gctx.createBindGroup(self.img_rend_bgl, &.{
             .{ .binding = 0, .buffer_handle = self.gctx.uniforms.buffer, .offset = 0, .size = @sizeOf(MeshUniforms) },
-            .{ .binding = 1, .texture_view_handle = self.img_texv },
+            .{ .binding = 1, .texture_view_handle = self.img_obj.?.texv },
             .{ .binding = 2, .sampler_handle = self.near_samp },
         });
         self.edge_rend_bg = self.gctx.createBindGroup(self.edge_rend_bgl, &.{
             .{ .binding = 0, .buffer_handle = self.gctx.uniforms.buffer, .offset = 0, .size = @sizeOf(MeshUniforms) },
         });
-
-        // var win_size = self.window.getSize();
-        // var will_resize = false;
-        // if (win_size[0] < @as(i32, @intCast(w)) + 2) {
-        //     win_size[0] = @as(i32, @intCast(w)) + 2;
-        //     will_resize = true;
-        // }
-        // if (win_size[1] < @as(i32, @intCast(h)) + 2) {
-        //     win_size[1] = @as(i32, @intCast(h)) + 2;
-        //     will_resize = true;
-        // }
-        // if (will_resize) {
-        //     self.window.setSize(win_size[0], win_size[1]);
-        // }
     }
 
     fn updateViewScale(self: *Self, canResizeWin: bool) void {
         // adjust image scale or window size
-        var fb_width = self.gctx.swapchain_descriptor.width;
-        var fb_height = self.gctx.swapchain_descriptor.height;
+        var fb_w = self.gctx.swapchain_descriptor.width;
+        var fb_h = self.gctx.swapchain_descriptor.height;
+        const img_w = self.img_obj.?.w;
+        const img_h = self.img_obj.?.h;
 
         var img_fit = self.img_fit;
         if (img_fit == .auto) {
-            const img_ratio = @as(f32, @floatFromInt(self.img_w)) / @as(f32, @floatFromInt(self.img_h));
-            const fb_ratio = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatFromInt(fb_height));
+            const img_ratio = @as(f32, @floatFromInt(img_w)) / @as(f32, @floatFromInt(img_h));
+            const fb_ratio = @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(fb_h));
             if (img_ratio >= fb_ratio) {
                 img_fit = .width;
             } else {
@@ -351,22 +371,22 @@ const App = struct {
         } else if (img_fit == .osScale) {
             self.img_view_scale = self.os_scale_factor;
         } else if (img_fit == .width) {
-            self.img_view_scale = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatFromInt(self.img_w));
+            self.img_view_scale = @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(img_w));
         } else if (img_fit == .height) {
-            self.img_view_scale = @as(f32, @floatFromInt(fb_height)) / @as(f32, @floatFromInt(self.img_h));
+            self.img_view_scale = @as(f32, @floatFromInt(fb_h)) / @as(f32, @floatFromInt(img_h));
         } else if (img_fit == .resizeWin) {
             if (canResizeWin) {
-                const win_w = @as(i32, @intFromFloat(@as(f32, @floatFromInt(self.img_w)) * self.os_scale_factor));
-                const win_h = @as(i32, @intFromFloat(@as(f32, @floatFromInt(self.img_h)) * self.os_scale_factor));
+                const win_w = @as(i32, @intFromFloat(@as(f32, @floatFromInt(img_w)) * self.os_scale_factor));
+                const win_h = @as(i32, @intFromFloat(@as(f32, @floatFromInt(img_h)) * self.os_scale_factor));
                 app.window.setSize(win_w, win_h);
-                fb_width = @intFromFloat(@as(f32, @floatFromInt(win_w)) * self.os_scale_factor);
-                fb_height = @intFromFloat(@as(f32, @floatFromInt(win_h)) * self.os_scale_factor);
-                self.img_view_scale = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatFromInt(self.img_w));
+                fb_w = @intFromFloat(@as(f32, @floatFromInt(win_w)) * self.os_scale_factor);
+                fb_h = @intFromFloat(@as(f32, @floatFromInt(win_h)) * self.os_scale_factor);
+                self.img_view_scale = @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(img_w));
             }
         }
     }
 
-    fn onOpenImage(self: *Self, fpath: []const u8) !void {
+    fn onOpenAppImage(self: *Self, fpath: []const u8) !void {
         self.img_path.set(fpath);
         const dpath = std.fs.path.dirname(fpath) orelse "";
         if (dpath.len == 0) return;
@@ -399,7 +419,7 @@ const App = struct {
         }
 
         var hist_fpath_str: PathStr = undefined;
-        const hist_fpath = getHistoryFilePath(&hist_fpath_str);
+        const hist_fpath = getAppFilePath(&hist_fpath_str, "zxbrush_content/history.txt");
         try savePathStrList(hist, hist_fpath);
 
         self.updateViewScale(true);
@@ -428,19 +448,12 @@ const App = struct {
     }
 };
 
-fn getHistoryFilePath(path: *PathStr) []const u8 {
+fn getAppFilePath(path: *PathStr, filename: []const u8) []const u8 {
     const exe_dir = std.fs.selfExeDirPath(path.buf[0..]) catch ".";
     path.setLen(exe_dir.len);
     path.replaceChar('\\', '/');
-    path.concat("/history.txt");
-    return path.str;
-}
-
-fn getConfigFilePath(path: *PathStr) []const u8 {
-    const exe_dir = std.fs.selfExeDirPath(path.buf[0..]) catch ".";
-    path.setLen(exe_dir.len);
-    path.replaceChar('\\', '/');
-    path.concat("/config.txt");
+    path.concat("/");
+    path.concat(filename);
     return path.str;
 }
 
@@ -523,36 +536,38 @@ export fn appOpenFile(fpath: [*c]const u8) callconv(.C) c_int {
     return ret;
 }
 
-fn openImage(fpath: [:0]const u8, is_saving: bool) !void {
+fn openAppImage(fpath: [:0]const u8, is_saving: bool) !void {
     std.debug.print("opening file: {s}\n", .{fpath});
 
     app.clearImage();
 
-    var openImageFailed = false;
+    var img_obj: ImageObj = undefined;
+    var failed = false;
     if (is_saving) {
         // TODO : implement save
     } else {
         if (useSdl) {
             const image = sdl_image.load(@ptrCast(fpath)) catch unreachable;
             defer image.free();
-            app.setSdlImage(image) catch blk: {
-                openImageFailed = true;
-                break :blk {};
+            img_obj = ImageObj.initWithSdlImage(app.gctx, image) catch blk: {
+                failed = true;
+                break :blk undefined;
             };
         } else {
             var image = try zstbi.Image.loadFromFile(@ptrCast(fpath), 4);
             defer image.deinit();
-            app.setStiImage(image) catch blk: {
-                openImageFailed = true;
-                break :blk {};
+            img_obj = ImageObj.initWithStiImage(app.gctx, image) catch blk: {
+                failed = true;
+                break :blk undefined;
             };
         }
     }
 
-    if (openImageFailed) {
-        std.debug.print("failed to open image: {s}\n", .{fpath});
+    if (failed) {
+        std.debug.print("failed to open app image: {s}\n", .{fpath});
     } else {
-        try app.onOpenImage(fpath);
+        try app.setImageObj(img_obj);
+        try app.onOpenAppImage(fpath);
     }
 }
 
@@ -598,7 +613,7 @@ fn openNeighborImage(offset: i32) !void {
         }
     }
     if (next_fpath != null) {
-        try openImage(next_fpath.?.str_z, false);
+        try openAppImage(next_fpath.?.str_z, false);
     }
 }
 
@@ -691,7 +706,7 @@ fn updateGUI() !void {
             zgui.separator();
             for (app.open_file_history.items) |path| {
                 if (zgui.menuItem(path.str_z, .{})) {
-                    openImage(path.str_z, false) catch {};
+                    openAppImage(path.str_z, false) catch {};
                 }
             }
             zgui.endMenu();
@@ -700,32 +715,54 @@ fn updateGUI() !void {
             if (zgui.menuItem("Clear", .{})) {
                 app.clearImage();
             }
+            if (zgui.menuItem("Resize", .{})) {
+                // TODO : resize
+            }
+            if (zgui.menuItem("Crop Selected", .{})) {
+                // TODO : crop
+            }
+            if (zgui.menuItem("Make Grayscale", .{})) {
+                // TODO : grayscale
+            }
             zgui.endMenu();
         }
         if (zgui.beginMenu("Config", true)) {
+            var willCloseMenu = false;
             if (zgui.checkbox("Reset View Scale on Clear", .{ .v = &app.reset_view_scale_on_clear })) {
-                // do nothing
+                willCloseMenu = true;
             }
-            var comboSelected = false;
             const cur_img_fit_str = @tagName(app.img_fit);
             if (zgui.beginCombo("Image Fit", .{ .preview_value = cur_img_fit_str })) {
                 for (0..@intCast(@intFromEnum(ImageFit.count))) |i| {
                     if (zgui.selectable(@tagName(@as(ImageFit, @enumFromInt(i))), .{})) {
                         app.img_fit = @enumFromInt(i);
                         app.updateViewScale(true);
-                        // TODO : how to close the parent menu
-                        comboSelected = true;
+                        willCloseMenu = true;
                         break;
                     }
                 }
                 zgui.endCombo();
             }
-            if (comboSelected) {
-                zgui.closeCurrentPopup();
-            }
+            // combo를 선택했을 때 상위 메뉴까지 한번에 닫는 코드
+            //if (willCloseMenu) {
+            //    zgui.closeCurrentPopup();
+            //}
             zgui.endMenu();
         }
         zgui.endMainMenuBar();
+    }
+
+    if (zgui.begin("Toolbox", .{})) {
+        const sel_but_tex_id = app.gctx.lookupResource(app.sel_but_img_obj.texv).?;
+        const line_but_tex_id = app.gctx.lookupResource(app.line_but_img_obj.texv).?;
+        if (zgui.imageButton("Select", sel_but_tex_id, .{ .w = 64, .h = 64 })) {
+            // select
+        }
+        zgui.sameLine(.{});
+        if (zgui.imageButton("Line", line_but_tex_id, .{ .w = 64, .h = 64 })) {
+            // line
+        }
+        zgui.end();
     }
 
     if (file_dlg_open) {
@@ -853,10 +890,14 @@ pub fn main() !void {
         break :scale_factor @max(scale[0], scale[1]);
     };
     app.os_scale_factor = scale_factor;
-    std.debug.print("os_scale_factor={d:.2}\n", .{app.os_scale_factor});
+    //std.debug.print("os_scale_factor={d:.2}\n", .{app.os_scale_factor});
 
     zgui.init(g_allocator);
     defer zgui.deinit();
+
+    var ui_cfg_path: PathStr = undefined;
+    _ = getAppFilePath(&ui_cfg_path, "zxbrush_content/imgui.ini");
+    zgui.io.setIniFilename(ui_cfg_path.str_z);
 
     _ = zgui.io.addFontFromFile(
         content_dir ++ "Roboto-Medium.ttf",
@@ -872,22 +913,22 @@ pub fn main() !void {
     defer zgui.backend.deinit();
 
     var cfg_fpath_str: PathStr = undefined;
-    _ = getConfigFilePath(&cfg_fpath_str);
+    _ = getAppFilePath(&cfg_fpath_str, "zxbrush_content/config.txt");
     loadPathStrMap(g_allocator, &app.config, cfg_fpath_str.str) catch {};
     app.applyConfigMap();
 
     zgui.getStyle().scaleAllSizes(scale_factor);
 
     if (cmd_arg_fpath != null) {
-        try openImage(cmd_arg_fpath.?.str_z, false);
+        try openAppImage(cmd_arg_fpath.?.str_z, false);
     }
 
     var hist_fpath_str: PathStr = undefined;
-    _ = getHistoryFilePath(&hist_fpath_str);
+    _ = getAppFilePath(&hist_fpath_str, "zxbrush_content/history.txt");
     loadPathStrList(g_allocator, &app.open_file_history, hist_fpath_str.str) catch {};
 
     if (file_dlg_obj == null) {
-        file_dlg_obj = try file_dlg.FileDialog.create(g_allocator, "File Dialog", app.img_ext_set, false, openImage);
+        file_dlg_obj = try file_dlg.FileDialog.create(g_allocator, "File Dialog", app.img_ext_set, false, openAppImage);
     }
 
     prevOnKey = window.setKeyCallback(onKey);
@@ -896,10 +937,10 @@ pub fn main() !void {
     while (!window.shouldClose()) {
         zglfw.pollEvents();
 
-        const fb_width = gctx.swapchain_descriptor.width;
-        const fb_height = gctx.swapchain_descriptor.height;
+        const fb_w = gctx.swapchain_descriptor.width;
+        const fb_h = gctx.swapchain_descriptor.height;
 
-        zgui.backend.newFrame(fb_width, fb_height);
+        zgui.backend.newFrame(fb_w, fb_h);
 
         zgui.setNextWindowPos(.{ .x = 20.0, .y = 20.0, .cond = .first_use_ever });
         zgui.setNextWindowSize(.{ .w = -1.0, .h = -1.0, .cond = .first_use_ever });
@@ -909,16 +950,18 @@ pub fn main() !void {
         // const cam_world_to_view = zm.lookToLh(zm.loadArr3(.{ 0.0, 0.0, -1.0 }), zm.loadArr3(.{ 0.0, 0.0, 1.0 }), zm.loadArr3{.{ 0.0, 1.0, 0.0 }});
         // const cam_view_to_clip = zm.perspectiveFovLh(
         //     math.pi / @as(f32, 3.0),
-        //     @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatFromInt(fb_height)),
+        //     @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(fb_h)),
         //     0.01,
         //     200.0,
         // );
         // const cam_world_to_clip = zm.mul(cam_world_to_view, cam_view_to_clip);
-        const img_w: i32 = @intFromFloat(@as(f32, @floatFromInt(app.img_w)) * app.img_view_scale);
-        const img_h: i32 = @intFromFloat(@as(f32, @floatFromInt(app.img_h)) * app.img_view_scale);
-        const object_to_world = zm.scaling(@floatFromInt(img_w), @floatFromInt(img_h), 1.0);
-        const object_to_world_edge = zm.scaling(@floatFromInt(img_w + 2), @floatFromInt(img_h + 2), 1.0);
-        const cam_world_to_clip = zm.orthographicLh(@floatFromInt(fb_width), @floatFromInt(fb_height), -1.0, 1.0);
+        const img_w = if (app.img_obj == null) 0 else app.img_obj.?.w;
+        const img_h = if (app.img_obj == null) 0 else app.img_obj.?.h;
+        const view_img_w: i32 = @intFromFloat(@as(f32, @floatFromInt(img_w)) * app.img_view_scale);
+        const view_img_h: i32 = @intFromFloat(@as(f32, @floatFromInt(img_h)) * app.img_view_scale);
+        const object_to_world = zm.scaling(@floatFromInt(view_img_w), @floatFromInt(view_img_h), 1.0);
+        const object_to_world_edge = zm.scaling(@floatFromInt(view_img_w + 2), @floatFromInt(view_img_h + 2), 1.0);
+        const cam_world_to_clip = zm.orthographicLh(@floatFromInt(fb_w), @floatFromInt(fb_h), -1.0, 1.0);
 
         const swapchain_texv = gctx.swapchain.getCurrentTextureView();
         defer swapchain_texv.release();
