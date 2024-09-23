@@ -45,11 +45,11 @@ const MeshUniforms = struct {
 };
 
 const ImageFit = enum(i32) {
-    noFit = 0,
+    original = 0,
     osScale,
     width,
     height,
-    auto,
+    autoAspect,
     resizeWin,
     count,
 };
@@ -142,7 +142,7 @@ const App = struct {
 
     // settings
     reset_view_scale_on_clear: bool = false,
-    img_fit: ImageFit = .noFit,
+    img_fit: ImageFit = .original,
 
     // state
     img_ext_set: ?*file_dlg.ExtSet = undefined,
@@ -161,10 +161,6 @@ const App = struct {
     lin_samp: zgpu.SamplerHandle = undefined,
     img_rend_pipe: zgpu.RenderPipelineHandle = undefined,
     edge_rend_pipe: zgpu.RenderPipelineHandle = undefined,
-
-    // ui
-    sel_but_img_obj: ImageObj = undefined,
-    line_but_img_obj: ImageObj = undefined,
 
     img_obj: ?ImageObj = null,
 
@@ -258,22 +254,6 @@ const App = struct {
             &self.edge_rend_pipe,
         );
 
-        var sel_but_img_path: PathStr = undefined;
-        _ = getAppFilePath(&sel_but_img_path, "zxbrush_content/ui_sel_but.png");
-        var line_but_img_path: PathStr = undefined;
-        _ = getAppFilePath(&line_but_img_path, "zxbrush_content/ui_sel_but.png");
-        if (useSdl) {
-            // sdl impl
-        } else {
-            var sel_but_img = try zstbi.Image.loadFromFile(sel_but_img_path.str_z, 4);
-            defer sel_but_img.deinit();
-            self.sel_but_img_obj = try ImageObj.initWithStiImage(self.gctx, sel_but_img);
-
-            var line_but_img = try zstbi.Image.loadFromFile(line_but_img_path.str_z, 4);
-            defer line_but_img.deinit();
-            self.line_but_img_obj = try ImageObj.initWithStiImage(self.gctx, line_but_img);
-        }
-
         self.img_ext_set = file_dlg.createExtSet(allocator, img_exts) catch null;
         self.cur_dir_ls = DirList.init(allocator);
         self.config = std.StringHashMap(*PathStr).init(allocator);
@@ -356,7 +336,7 @@ const App = struct {
         const img_h = self.img_obj.?.h;
 
         var img_fit = self.img_fit;
-        if (img_fit == .auto) {
+        if (img_fit == .autoAspect) {
             const img_ratio = @as(f32, @floatFromInt(img_w)) / @as(f32, @floatFromInt(img_h));
             const fb_ratio = @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(fb_h));
             if (img_ratio >= fb_ratio) {
@@ -366,7 +346,7 @@ const App = struct {
             }
         }
 
-        if (img_fit == .noFit) {
+        if (img_fit == .original) {
             self.img_view_scale = 1.0;
         } else if (img_fit == .osScale) {
             self.img_view_scale = self.os_scale_factor;
@@ -524,9 +504,13 @@ fn savePathStrMap(str_map: *std.StringHashMap(*PathStr), fpath: []const u8) !voi
 
 var g_allocator: Allocator = undefined;
 var app: *App = undefined;
+var cmd_arg_fpath: ?PathStr = null;
+
 var file_dlg_obj: ?*file_dlg.FileDialog = null;
 var file_dlg_open: bool = false;
-var cmd_arg_fpath: ?PathStr = null;
+var sel_but_img_obj: ImageObj = undefined;
+var line_but_img_obj: ImageObj = undefined;
+var resize_dlg_open: bool = false;
 
 // this is callback used by cocoa framework
 export fn appOpenFile(fpath: [*c]const u8) callconv(.C) c_int {
@@ -716,7 +700,7 @@ fn updateGUI() !void {
                 app.clearImage();
             }
             if (zgui.menuItem("Resize", .{})) {
-                // TODO : resize
+                resize_dlg_open = true;
             }
             if (zgui.menuItem("Crop Selected", .{})) {
                 // TODO : crop
@@ -753,8 +737,8 @@ fn updateGUI() !void {
     }
 
     if (zgui.begin("Toolbox", .{})) {
-        const sel_but_tex_id = app.gctx.lookupResource(app.sel_but_img_obj.texv).?;
-        const line_but_tex_id = app.gctx.lookupResource(app.line_but_img_obj.texv).?;
+        const sel_but_tex_id = app.gctx.lookupResource(sel_but_img_obj.texv).?;
+        const line_but_tex_id = app.gctx.lookupResource(line_but_img_obj.texv).?;
         if (zgui.imageButton("Select", sel_but_tex_id, .{ .w = 64, .h = 64 })) {
             // select
         }
@@ -762,14 +746,37 @@ fn updateGUI() !void {
         if (zgui.imageButton("Line", line_but_tex_id, .{ .w = 64, .h = 64 })) {
             // line
         }
-        zgui.end();
     }
+    zgui.end();
 
     if (file_dlg_open) {
         var need_confirm: bool = false;
         std.debug.assert(file_dlg_obj != null);
         file_dlg_open = try file_dlg_obj.?.ui(&need_confirm);
         //_ = need_confirm;
+    }
+
+    if (resize_dlg_open) {
+        if (zgui.begin("Resize Image", .{})) {
+            var buf_w: [256:0]u8 = [_:0]u8{0} ** 256;
+            var buf_h: [256:0]u8 = [_:0]u8{0} ** 256;
+            _ = try std.fmt.bufPrintZ(&buf_w, "{d}", .{app.img_obj.?.w});
+            _ = try std.fmt.bufPrintZ(&buf_h, "{d}", .{app.img_obj.?.h});
+            _ = zgui.inputText("Width", .{ .buf = buf_w[0..], .flags = .{
+                .chars_decimal = true,
+            } });
+            _ = zgui.inputText("Height", .{ .buf = buf_h[0..], .flags = .{
+                .chars_decimal = true,
+            } });
+            if (zgui.button("OK", .{})) {
+                resize_dlg_open = false;
+            }
+            zgui.sameLine(.{});
+            if (zgui.button("Cancel", .{})) {
+                resize_dlg_open = false;
+            }
+        }
+        zgui.end();
     }
 }
 
@@ -929,6 +936,22 @@ pub fn main() !void {
 
     if (file_dlg_obj == null) {
         file_dlg_obj = try file_dlg.FileDialog.create(g_allocator, "File Dialog", app.img_ext_set, false, openAppImage);
+    }
+
+    var sel_but_img_path: PathStr = undefined;
+    _ = getAppFilePath(&sel_but_img_path, "zxbrush_content/ui_sel_but.png");
+    var line_but_img_path: PathStr = undefined;
+    _ = getAppFilePath(&line_but_img_path, "zxbrush_content/ui_sel_but.png");
+    if (useSdl) {
+        // sdl impl
+    } else {
+        var sel_but_img = try zstbi.Image.loadFromFile(sel_but_img_path.str_z, 4);
+        defer sel_but_img.deinit();
+        sel_but_img_obj = try ImageObj.initWithStiImage(gctx, sel_but_img);
+
+        var line_but_img = try zstbi.Image.loadFromFile(line_but_img_path.str_z, 4);
+        defer line_but_img.deinit();
+        line_but_img_obj = try ImageObj.initWithStiImage(gctx, line_but_img);
     }
 
     prevOnKey = window.setKeyCallback(onKey);
