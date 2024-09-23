@@ -16,10 +16,35 @@ const content_dir = @import("build_options").content_dir;
 const window_title = "ZXBrush";
 const useSdl = false;
 // stbi supported set
-const stbi_img_exts: [10][]const u8 = .{ ".jpg", ".jpeg", ".png", ".tga", ".bmp", ".psd", ".gif", ".hdr", ".pic", ".pnm" };
+const stbi_img_exts: [10][]const u8 = .{
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".tga",
+    ".bmp",
+    ".psd",
+    ".gif",
+    ".hdr",
+    ".pic",
+    ".pnm",
+};
 // sdl supported set
-const sdl_img_exts: [12][]const u8 = .{ ".bmp", ".gif", ".jpg", ".jpeg", ".lbm", ".pcx", ".png", ".pnm", ".qoi", ".tga", ".xcf", ".xpm" };
+const sdl_img_exts: [12][]const u8 = .{
+    ".bmp",
+    ".gif",
+    ".jpg",
+    ".jpeg",
+    ".lbm",
+    ".pcx",
+    ".png",
+    ".pnm",
+    ".qoi",
+    ".tga",
+    ".xcf",
+    ".xpm",
+};
 const img_exts: []const []const u8 = if (useSdl) &sdl_img_exts else &stbi_img_exts;
+const depth_tex_format = wgpu.TextureFormat.depth16_unorm;
 
 const Allocator = std.mem.Allocator;
 const PathStr = file_dlg.PathStr;
@@ -41,6 +66,7 @@ const Vertex = extern struct {
 const MeshUniforms = struct {
     object_to_world: zm.Mat,
     object_to_world_edge: zm.Mat,
+    object_to_world_sel: zm.Mat,
     world_to_clip: zm.Mat,
 };
 
@@ -68,7 +94,16 @@ const ImageObj = struct {
         const img_is_hdr = image.is_hdr;
         const img_bytes_per_row = image.bytes_per_row;
         const img_data = image.data;
-        return try ImageObj.initData(gctx, img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
+        return try ImageObj.initData(
+            gctx,
+            img_w,
+            img_h,
+            img_num_components,
+            img_bytes_per_component,
+            img_is_hdr,
+            img_bytes_per_row,
+            img_data,
+        );
     }
 
     fn initWithSdlImage(gctx: *zgpu.GraphicsContext, image: *sdl.Surface) !ImageObj {
@@ -91,15 +126,37 @@ const ImageObj = struct {
         const img_data_len = img_h * img_bytes_per_row;
         const img_data = @as([*]u8, @ptrCast(image.pixels))[0..img_data_len];
 
-        return try ImageObj.initData(gctx, img_w, img_h, img_num_components, img_bytes_per_component, img_is_hdr, img_bytes_per_row, img_data);
+        return try ImageObj.initData(
+            gctx,
+            img_w,
+            img_h,
+            img_num_components,
+            img_bytes_per_component,
+            img_is_hdr,
+            img_bytes_per_row,
+            img_data,
+        );
     }
 
-    fn initData(gctx: *zgpu.GraphicsContext, w: u32, h: u32, num_components: u32, bytes_per_component: u32, is_hdr: bool, bytes_per_row: u32, data: []const u8) !ImageObj {
+    fn initData(
+        gctx: *zgpu.GraphicsContext,
+        w: u32,
+        h: u32,
+        num_components: u32,
+        bytes_per_component: u32,
+        is_hdr: bool,
+        bytes_per_row: u32,
+        data: []const u8,
+    ) !ImageObj {
         var self: ImageObj = .{};
         self.w = w;
         self.h = h;
 
-        const tex_format = zgpu.imageInfoToTextureFormat(num_components, bytes_per_component, is_hdr);
+        const tex_format = zgpu.imageInfoToTextureFormat(
+            num_components,
+            bytes_per_component,
+            is_hdr,
+        );
         if (tex_format == .undef) return error.FormatNotSupported;
 
         self.tex = gctx.createTexture(.{
@@ -150,24 +207,32 @@ const App = struct {
     config: std.StringHashMap(*PathStr) = undefined,
     open_file_history: PathStrList = undefined,
 
-    // env
+    ///////////////////////////////////////////
+    // static env
     vertex_buf: zgpu.BufferHandle = undefined,
     index_buf: zgpu.BufferHandle = undefined,
     depth_tex: zgpu.TextureHandle = undefined,
     depth_texv: zgpu.TextureViewHandle = undefined,
-    img_rend_bgl: zgpu.BindGroupLayoutHandle = undefined,
-    edge_rend_bgl: zgpu.BindGroupLayoutHandle = undefined,
     near_samp: zgpu.SamplerHandle = undefined,
     lin_samp: zgpu.SamplerHandle = undefined,
+    // binding group layout
+    img_rend_bgl: zgpu.BindGroupLayoutHandle = undefined,
+    edge_rend_bgl: zgpu.BindGroupLayoutHandle = undefined,
+    sel_rend_bgl: zgpu.BindGroupLayoutHandle = undefined,
+    // render pipeline
     img_rend_pipe: zgpu.RenderPipelineHandle = undefined,
     edge_rend_pipe: zgpu.RenderPipelineHandle = undefined,
+    sel_rend_pipe: zgpu.RenderPipelineHandle = undefined,
 
+    ///////////////////////////////////////////
+    // dynamic env by image
     img_obj: ?ImageObj = null,
-
-    img_rend_bg: ?zgpu.BindGroupHandle = null,
-    edge_rend_bg: ?zgpu.BindGroupHandle = null,
     img_view_scale: f32 = 1.0,
     img_path: PathStr = undefined,
+    // binding group
+    img_rend_bg: ?zgpu.BindGroupHandle = null,
+    edge_rend_bg: ?zgpu.BindGroupHandle = null,
+    sel_rend_bg: ?zgpu.BindGroupHandle = null,
 
     const Self = @This();
 
@@ -178,28 +243,7 @@ const App = struct {
             .window = window,
             .gctx = gctx,
         };
-        self.img_rend_bgl = gctx.createBindGroupLayout(&.{
-            zgpu.bufferEntry(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0),
-            zgpu.textureEntry(1, .{ .fragment = true }, .float, .tvdim_2d, false),
-            zgpu.samplerEntry(2, .{ .fragment = true }, .filtering),
-        });
-        self.edge_rend_bgl = gctx.createBindGroupLayout(&.{
-            zgpu.bufferEntry(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0),
-        });
-
-        self.near_samp = gctx.createSampler(.{
-            .mag_filter = .nearest,
-            .min_filter = .nearest,
-            .mipmap_filter = .nearest,
-            .max_anisotropy = 1,
-        });
-        self.lin_samp = gctx.createSampler(.{
-            .mag_filter = .linear,
-            .min_filter = .linear,
-            .mipmap_filter = .linear,
-            .max_anisotropy = 1,
-        });
-
+        // buffer
         const indices: [6]u32 = .{ 0, 1, 2, 0, 2, 3 };
         const positions: [4][3]f32 = .{ .{ -0.5, -0.5, 0.0 }, .{ 0.5, -0.5, 0.0 }, .{ 0.5, 0.5, 0.0 }, .{ -0.5, 0.5, 0.0 } };
         const texcoords: [4][2]f32 = .{ .{ 0.0, 1.0 }, .{ 1.0, 1.0 }, .{ 1.0, 0.0 }, .{ 0.0, 0.0 } };
@@ -218,11 +262,37 @@ const App = struct {
             .size = indices.len * @sizeOf(u32),
         });
         gctx.queue.writeBuffer(gctx.lookupResource(self.index_buf).?, 0, u32, &indices);
-
         const depth = createDepthTexture(gctx);
         self.depth_tex = depth.tex;
         self.depth_texv = depth.texv;
-
+        // sampler
+        self.near_samp = gctx.createSampler(.{
+            .mag_filter = .nearest,
+            .min_filter = .nearest,
+            .mipmap_filter = .nearest,
+            .max_anisotropy = 1,
+        });
+        self.lin_samp = gctx.createSampler(.{
+            .mag_filter = .linear,
+            .min_filter = .linear,
+            .mipmap_filter = .linear,
+            .max_anisotropy = 1,
+        });
+        // bind group layout
+        self.img_rend_bgl = gctx.createBindGroupLayout(&.{
+            zgpu.bufferEntry(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0),
+            zgpu.textureEntry(1, .{ .fragment = true }, .float, .tvdim_2d, false),
+            zgpu.samplerEntry(2, .{ .fragment = true }, .filtering),
+        });
+        self.edge_rend_bgl = gctx.createBindGroupLayout(&.{
+            zgpu.bufferEntry(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0),
+        });
+        self.sel_rend_bgl = gctx.createBindGroupLayout(&.{
+            zgpu.bufferEntry(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0),
+            zgpu.textureEntry(1, .{ .fragment = true }, .float, .tvdim_2d, false),
+            zgpu.samplerEntry(2, .{ .fragment = true }, .filtering),
+        });
+        // render pipeline
         createRenderPipe(
             allocator,
             gctx,
@@ -231,8 +301,9 @@ const App = struct {
             wgsl.img_fs,
             zgpu.GraphicsContext.swapchain_format,
             false,
+            null,
             wgpu.DepthStencilState{
-                .format = .depth32_float,
+                .format = depth_tex_format,
                 .depth_write_enabled = true,
                 .depth_compare = .less_equal,
             },
@@ -246,12 +317,36 @@ const App = struct {
             wgsl.edge_fs,
             zgpu.GraphicsContext.swapchain_format,
             false,
+            null,
             wgpu.DepthStencilState{
-                .format = .depth32_float,
+                .format = depth_tex_format,
                 .depth_write_enabled = true,
                 .depth_compare = .less_equal,
             },
             &self.edge_rend_pipe,
+        );
+        createRenderPipe(
+            allocator,
+            gctx,
+            &.{self.sel_rend_bgl},
+            wgsl.sel_vs,
+            wgsl.sel_fs,
+            zgpu.GraphicsContext.swapchain_format,
+            false,
+            wgpu.BlendState{
+                .color = .{
+                    .operation = .add,
+                    .src_factor = .one,
+                    .dst_factor = .one_minus_src_alpha,
+                },
+                .alpha = .{},
+            },
+            wgpu.DepthStencilState{
+                .format = depth_tex_format,
+                .depth_write_enabled = true,
+                .depth_compare = .less_equal,
+            },
+            &self.sel_rend_pipe,
         );
 
         self.img_ext_set = file_dlg.createExtSet(allocator, img_exts) catch null;
@@ -285,10 +380,14 @@ const App = struct {
             self.allocator.destroy(self.img_ext_set.?);
         }
 
+        self.gctx.releaseResource(self.sel_rend_pipe);
         self.gctx.releaseResource(self.edge_rend_pipe);
         self.gctx.releaseResource(self.img_rend_pipe);
+
+        self.gctx.releaseResource(self.sel_rend_bgl);
         self.gctx.releaseResource(self.edge_rend_bgl);
         self.gctx.releaseResource(self.img_rend_bgl);
+
         self.gctx.releaseResource(self.lin_samp);
         self.gctx.releaseResource(self.near_samp);
         self.gctx.releaseResource(self.depth_texv);
@@ -297,6 +396,10 @@ const App = struct {
     }
 
     pub fn clearImage(self: *Self) void {
+        if (self.sel_rend_bg != null) {
+            self.gctx.releaseResource(self.sel_rend_bg.?);
+            self.sel_rend_bg = null;
+        }
         if (self.edge_rend_bg != null) {
             self.gctx.releaseResource(self.edge_rend_bg.?);
             self.edge_rend_bg = null;
@@ -305,6 +408,7 @@ const App = struct {
             self.gctx.releaseResource(self.img_rend_bg.?);
             self.img_rend_bg = null;
         }
+
         if (self.img_obj != null) {
             self.img_obj.?.deinit(self.gctx);
             self.img_obj = null;
@@ -325,6 +429,11 @@ const App = struct {
         });
         self.edge_rend_bg = self.gctx.createBindGroup(self.edge_rend_bgl, &.{
             .{ .binding = 0, .buffer_handle = self.gctx.uniforms.buffer, .offset = 0, .size = @sizeOf(MeshUniforms) },
+        });
+        self.sel_rend_bg = self.gctx.createBindGroup(self.sel_rend_bgl, &.{
+            .{ .binding = 0, .buffer_handle = self.gctx.uniforms.buffer, .offset = 0, .size = @sizeOf(MeshUniforms) },
+            .{ .binding = 1, .texture_view_handle = self.img_obj.?.texv },
+            .{ .binding = 2, .sampler_handle = self.near_samp },
         });
     }
 
@@ -428,6 +537,21 @@ const App = struct {
     }
 };
 
+// global vars
+var g_allocator: Allocator = undefined;
+var app: *App = undefined;
+var cmd_arg_fpath: ?PathStr = null;
+
+var file_dlg_obj: ?*file_dlg.FileDialog = null;
+var file_dlg_open: bool = false;
+var sel_but_img_obj: ImageObj = undefined;
+var line_but_img_obj: ImageObj = undefined;
+var resize_dlg_open: bool = false;
+var is_sel_box_active: bool = false;
+var is_sel_box_dragging: bool = false;
+var sel_beg_pos: [2]f64 = .{ -1.0, -1.0 };
+var sel_end_pos: [2]f64 = .{ -1.0, -1.0 };
+
 fn getAppFilePath(path: *PathStr, filename: []const u8) []const u8 {
     const exe_dir = std.fs.selfExeDirPath(path.buf[0..]) catch ".";
     path.setLen(exe_dir.len);
@@ -501,16 +625,6 @@ fn savePathStrMap(str_map: *std.StringHashMap(*PathStr), fpath: []const u8) !voi
     }
     try buf_writer.flush();
 }
-
-var g_allocator: Allocator = undefined;
-var app: *App = undefined;
-var cmd_arg_fpath: ?PathStr = null;
-
-var file_dlg_obj: ?*file_dlg.FileDialog = null;
-var file_dlg_open: bool = false;
-var sel_but_img_obj: ImageObj = undefined;
-var line_but_img_obj: ImageObj = undefined;
-var resize_dlg_open: bool = false;
 
 // this is callback used by cocoa framework
 export fn appOpenFile(fpath: [*c]const u8) callconv(.C) c_int {
@@ -609,6 +723,7 @@ fn createRenderPipe(
     wgsl_fs: [:0]const u8,
     format: wgpu.TextureFormat,
     only_position_attrib: bool,
+    blend_state: ?wgpu.BlendState,
     depth_state: ?wgpu.DepthStencilState,
     out_pipe: *zgpu.RenderPipelineHandle,
 ) void {
@@ -623,9 +738,12 @@ fn createRenderPipe(
     const fs_mod = zgpu.createWgslShaderModule(gctx.device, wgsl_fs, null);
     defer fs_mod.release();
 
-    const color_targets = [_]wgpu.ColorTargetState{.{
-        .format = format,
-    }};
+    const color_targets = [_]wgpu.ColorTargetState{
+        .{
+            .format = format,
+            .blend = if (blend_state) |bs| &bs else null,
+        },
+    };
 
     const vertex_attributes = [_]wgpu.VertexAttribute{
         .{ .format = .float32x3, .offset = 0, .shader_location = 0 },
@@ -668,7 +786,7 @@ fn createDepthTexture(gctx: *zgpu.GraphicsContext) struct {
             .height = gctx.swapchain_descriptor.height,
             .depth_or_array_layers = 1,
         },
-        .format = .depth32_float,
+        .format = depth_tex_format,
         .mip_level_count = 1,
         .sample_count = 1,
     });
@@ -782,8 +900,16 @@ fn updateGUI() !void {
 
 var prevOnKey: ?zglfw.Window.KeyFn = null;
 var prevOnScroll: ?zglfw.Window.ScrollFn = null;
+var prevOnMouseButton: ?zglfw.Window.MouseButtonFn = null;
+var prevOnCursorPos: ?zglfw.Window.CursorPosFn = null;
 
-fn onKey(window: *zglfw.Window, key: zglfw.Key, scancode: i32, action: zglfw.Action, mods: zglfw.Mods) callconv(.C) void {
+fn onKey(
+    window: *zglfw.Window,
+    key: zglfw.Key,
+    scancode: i32,
+    action: zglfw.Action,
+    mods: zglfw.Mods,
+) callconv(.C) void {
     var handled: bool = false;
     var openImageOffset: i32 = 0;
     if (key == .left or key == .comma) {
@@ -805,7 +931,11 @@ fn onKey(window: *zglfw.Window, key: zglfw.Key, scancode: i32, action: zglfw.Act
     }
 }
 
-fn onScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void {
+fn onScroll(
+    window: *zglfw.Window,
+    xoffset: f64,
+    yoffset: f64,
+) callconv(.C) void {
     var handled: bool = false;
     const rbutton_state = window.getMouseButton(.right);
     const lshift_state = window.getKey(.left_shift);
@@ -833,6 +963,49 @@ fn onScroll(window: *zglfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void
     }
 }
 
+fn onMouseButton(
+    window: *zglfw.Window,
+    button: zglfw.MouseButton,
+    action: zglfw.Action,
+    mods: zglfw.Mods,
+) callconv(.C) void {
+    if (button == .left) {
+        if (action == .press) {
+            is_sel_box_active = true;
+            is_sel_box_dragging = true;
+            sel_beg_pos = window.getCursorPos();
+        } else if (action == .release) {
+            is_sel_box_dragging = false;
+            const cur_pos = window.getCursorPos();
+            if (sel_beg_pos[0] == cur_pos[0] and sel_beg_pos[1] == cur_pos[1]) {
+                is_sel_box_active = false;
+            }
+        }
+    }
+
+    if (prevOnMouseButton != null) {
+        prevOnMouseButton.?(window, button, action, mods);
+    }
+}
+
+fn onCursorPos(
+    window: *zglfw.Window,
+    xpos: f64,
+    ypos: f64,
+) callconv(.C) void {
+    if (is_sel_box_dragging) {
+        sel_end_pos = .{ xpos, ypos };
+        std.debug.print(
+            "beg=({d},{d}), end=({d},{d})\n",
+            .{ sel_beg_pos[0], sel_beg_pos[1], sel_end_pos[0], sel_end_pos[1] },
+        );
+    }
+
+    if (prevOnCursorPos != null) {
+        prevOnCursorPos.?(window, xpos, ypos);
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -846,8 +1019,8 @@ pub fn main() !void {
         for (0.., args) |i, arg| {
             if (i == 1) {
                 cmd_arg_fpath = .{};
-                cmd_arg_fpath.set(arg);
-                cmd_arg_fpath.replaceChar('\\', '/');
+                cmd_arg_fpath.?.set(arg);
+                cmd_arg_fpath.?.replaceChar('\\', '/');
                 break;
             }
         }
@@ -935,7 +1108,13 @@ pub fn main() !void {
     loadPathStrList(g_allocator, &app.open_file_history, hist_fpath_str.str) catch {};
 
     if (file_dlg_obj == null) {
-        file_dlg_obj = try file_dlg.FileDialog.create(g_allocator, "File Dialog", app.img_ext_set, false, openAppImage);
+        file_dlg_obj = try file_dlg.FileDialog.create(
+            g_allocator,
+            "File Dialog",
+            app.img_ext_set,
+            false,
+            openAppImage,
+        );
     }
 
     var sel_but_img_path: PathStr = undefined;
@@ -956,12 +1135,19 @@ pub fn main() !void {
 
     prevOnKey = window.setKeyCallback(onKey);
     prevOnScroll = window.setScrollCallback(onScroll);
+    prevOnMouseButton = window.setMouseButtonCallback(onMouseButton);
+    prevOnCursorPos = window.setCursorPosCallback(onCursorPos);
 
     while (!window.shouldClose()) {
         zglfw.pollEvents();
 
         const fb_w = gctx.swapchain_descriptor.width;
         const fb_h = gctx.swapchain_descriptor.height;
+        const _fb_w: f32 = @floatFromInt(fb_w);
+        const _fb_h: f32 = @floatFromInt(fb_h);
+        const _half_fb_w = _fb_w * 0.5;
+        const _half_fb_h = _fb_h * 0.5;
+        //const win_size = window.getSize();
 
         zgui.backend.newFrame(fb_w, fb_h);
 
@@ -970,7 +1156,11 @@ pub fn main() !void {
 
         try updateGUI();
 
-        // const cam_world_to_view = zm.lookToLh(zm.loadArr3(.{ 0.0, 0.0, -1.0 }), zm.loadArr3(.{ 0.0, 0.0, 1.0 }), zm.loadArr3{.{ 0.0, 1.0, 0.0 }});
+        // const cam_world_to_view = zm.lookToLh(
+        //     zm.loadArr3(.{ 0.0, 0.0, -1.0 }),
+        //     zm.loadArr3(.{ 0.0, 0.0, 1.0 }),
+        //     zm.loadArr3{.{ 0.0, 1.0, 0.0 }},
+        // );
         // const cam_view_to_clip = zm.perspectiveFovLh(
         //     math.pi / @as(f32, 3.0),
         //     @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(fb_h)),
@@ -982,9 +1172,33 @@ pub fn main() !void {
         const img_h = if (app.img_obj == null) 0 else app.img_obj.?.h;
         const view_img_w: i32 = @intFromFloat(@as(f32, @floatFromInt(img_w)) * app.img_view_scale);
         const view_img_h: i32 = @intFromFloat(@as(f32, @floatFromInt(img_h)) * app.img_view_scale);
-        const object_to_world = zm.scaling(@floatFromInt(view_img_w), @floatFromInt(view_img_h), 1.0);
-        const object_to_world_edge = zm.scaling(@floatFromInt(view_img_w + 2), @floatFromInt(view_img_h + 2), 1.0);
-        const cam_world_to_clip = zm.orthographicLh(@floatFromInt(fb_w), @floatFromInt(fb_h), -1.0, 1.0);
+        const object_to_world = zm.scaling(
+            @floatFromInt(view_img_w),
+            @floatFromInt(view_img_h),
+            1.0,
+        );
+        const object_to_world_edge = zm.scaling(
+            @floatFromInt(view_img_w + 2),
+            @floatFromInt(view_img_h + 2),
+            1.0,
+        );
+        const sel_w: f32 = @floatCast(@abs(sel_end_pos[0] - sel_beg_pos[0]));
+        const sel_h: f32 = @floatCast(@abs(sel_end_pos[1] - sel_beg_pos[1]));
+        const half_sel_w = sel_w * 0.5;
+        const half_sel_h = sel_h * 0.5;
+        const sel_scale = zm.scaling(sel_w, sel_h, 1.0);
+        const sel_translate = zm.translation(
+            @as(f32, @floatCast(sel_beg_pos[0])) - _half_fb_w + half_sel_w,
+            _fb_h - @as(f32, @floatCast(sel_beg_pos[1])) - _half_fb_h + half_sel_h,
+            0.0,
+        );
+        const object_to_world_sel = zm.mul(sel_scale, sel_translate);
+        const cam_world_to_clip = zm.orthographicLh(
+            _fb_w,
+            _fb_h,
+            -1.0,
+            1.0,
+        );
 
         const swapchain_texv = gctx.swapchain.getCurrentTextureView();
         defer swapchain_texv.release();
@@ -1001,18 +1215,28 @@ pub fn main() !void {
                     const ib_info = gctx.lookupResourceInfo(app.index_buf) orelse break :pass;
                     const edge_rend_pipe = gctx.lookupResource(app.edge_rend_pipe) orelse break :pass;
                     const img_rend_pipe = gctx.lookupResource(app.img_rend_pipe) orelse break :pass;
+                    const sel_rend_pipe = gctx.lookupResource(app.sel_rend_pipe) orelse break :pass;
                     const depth_texv = gctx.lookupResource(app.depth_texv) orelse break :pass;
                     // image specific objects
                     const edge_rend_bg = gctx.lookupResource(app.edge_rend_bg.?) orelse break :pass;
                     const img_rend_bg = gctx.lookupResource(app.img_rend_bg.?) orelse break :pass;
+                    const sel_rend_bg = gctx.lookupResource(app.sel_rend_bg.?) orelse break :pass;
 
-                    const pass = zgpu.beginRenderPassSimple(encoder, .clear, swapchain_texv, null, depth_texv, 1.0);
+                    const pass = zgpu.beginRenderPassSimple(
+                        encoder,
+                        .clear,
+                        swapchain_texv,
+                        null,
+                        depth_texv,
+                        1.0,
+                    );
                     defer zgpu.endReleasePass(pass);
 
                     const mem = gctx.uniformsAllocate(MeshUniforms, 1);
                     mem.slice[0] = .{
                         .object_to_world = zm.transpose(object_to_world),
                         .object_to_world_edge = zm.transpose(object_to_world_edge),
+                        .object_to_world_sel = zm.transpose(object_to_world_sel),
                         .world_to_clip = zm.transpose(cam_world_to_clip),
                     };
 
@@ -1026,12 +1250,25 @@ pub fn main() !void {
                     pass.setPipeline(img_rend_pipe);
                     pass.setBindGroup(0, img_rend_bg, &.{mem.offset});
                     pass.drawIndexed(6, 1, 0, 0, 0);
+
+                    if (is_sel_box_active) {
+                        pass.setPipeline(sel_rend_pipe);
+                        pass.setBindGroup(0, sel_rend_bg, &.{mem.offset});
+                        pass.drawIndexed(6, 1, 0, 0, 0);
+                    }
                 }
             }
 
             // GUI pass
             {
-                const pass = zgpu.beginRenderPassSimple(encoder, .load, swapchain_texv, null, null, null);
+                const pass = zgpu.beginRenderPassSimple(
+                    encoder,
+                    .load,
+                    swapchain_texv,
+                    null,
+                    null,
+                    null,
+                );
                 defer zgpu.endReleasePass(pass);
                 zgui.backend.draw(pass);
             }
@@ -1049,11 +1286,11 @@ pub fn main() !void {
             const depth = createDepthTexture(gctx);
             app.depth_tex = depth.tex;
             app.depth_texv = depth.texv;
-            const win_size = app.window.getSize();
-            const fb_size = app.window.getFramebufferSize();
+            //const win_size = app.window.getSize();
+            //const fb_size = app.window.getFramebufferSize();
             // hdpi mode 에서는 win_size < fb_size 이다.
             // fb_size 는 실제 LCD 상의 픽셀 수를 의미한다.
-            std.debug.print("win_size=({d},{d}), fb_size=({d},{d})\n", .{ win_size[0], win_size[1], fb_size[0], fb_size[1] });
+            //std.debug.print("win_size=({d},{d}), fb_size=({d},{d})\n", .{ win_size[0], win_size[1], fb_size[0], fb_size[1] });
             app.updateViewScale(false);
         }
     }

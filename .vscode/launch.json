@@ -6,7 +6,6 @@
     "configurations": [
         {
             "name": "zxbrush",
-            "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/zig-out/bin/zxbrush",
             //"args": [],
@@ -15,7 +14,13 @@
             "cwd": "${workspaceFolder}/zig-out/bin",
             "environment": [],
             "externalConsole": false,
-            "MIMode": "lldb"
+            //"type": "cppdbg",
+            "type": "cppvsdbg",
+            "windows": {
+            },
+            "osx": {
+                //"MIMode": "lldb"    
+            },
         },
     ]
 }

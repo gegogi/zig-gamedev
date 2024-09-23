@@ -24,7 +24,12 @@
         {
             "label": "copy artifacts",
             "type": "shell",
-            "command": "cp zig-out/bin/zxbrush samples/zxbrush/ZXBrush.app/Contents/MacOS/_zxbrush; cp -R zig-out/bin/zxbrush_content samples/zxbrush/ZXBrush.app/Contents/MacOS",
+            "windows": {
+                "command": "REM skipping macOS packaging",
+            },
+            "osx": {
+                "command": "cp zig-out/bin/zxbrush samples/zxbrush/ZXBrush.app/Contents/MacOS/_zxbrush; cp -R zig-out/bin/zxbrush_content samples/zxbrush/ZXBrush.app/Contents/MacOS",
+            },
         },
     ]
 }
