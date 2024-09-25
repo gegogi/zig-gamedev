@@ -49,6 +49,7 @@ const depth_tex_format = wgpu.TextureFormat.depth16_unorm;
 const Allocator = std.mem.Allocator;
 const PathStr = file_dlg.PathStr;
 const DirList = file_dlg.DirList;
+const FileDialog = file_dlg.FileDialog;
 const PathStrList = std.ArrayList(*PathStr);
 
 const Vertex = extern struct {
@@ -86,7 +87,7 @@ const ImageObj = struct {
     tex: zgpu.TextureHandle = undefined,
     texv: zgpu.TextureViewHandle = undefined,
 
-    fn initWithStiImage(gctx: *zgpu.GraphicsContext, image: zstbi.Image) !ImageObj {
+    pub fn initWithStiImage(gctx: *zgpu.GraphicsContext, image: zstbi.Image) !ImageObj {
         const img_w = image.width;
         const img_h = image.height;
         const img_num_components = image.num_components;
@@ -106,7 +107,7 @@ const ImageObj = struct {
         );
     }
 
-    fn initWithSdlImage(gctx: *zgpu.GraphicsContext, image: *sdl.Surface) !ImageObj {
+    pub fn initWithSdlImage(gctx: *zgpu.GraphicsContext, image: *sdl.Surface) !ImageObj {
         const img_w: u32 = @intCast(image.w);
         const img_h: u32 = @intCast(image.h);
 
@@ -136,6 +137,18 @@ const ImageObj = struct {
             img_bytes_per_row,
             img_data,
         );
+    }
+
+    pub fn initEmptyRGBA(
+        gctx: *zgpu.GraphicsContext,
+        allocator: Allocator,
+        w: u32,
+        h: u32,
+    ) !ImageObj {
+        const img_data = try allocator.alloc(u8, w * h * 4);
+        @memset(img_data, 0);
+        defer allocator.free(img_data);
+        return try ImageObj.initData(gctx, w, h, 4, 1, false, 4 * w, img_data);
     }
 
     fn initData(
@@ -226,7 +239,7 @@ const App = struct {
 
     ///////////////////////////////////////////
     // dynamic env by image
-    img_obj: ?ImageObj = null,
+    img_obj: ImageObj = undefined,
     img_view_scale: f32 = 1.0,
     img_path: PathStr = undefined,
     // binding group
@@ -336,8 +349,8 @@ const App = struct {
             wgpu.BlendState{
                 .color = .{
                     .operation = .add,
-                    .src_factor = .one,
-                    .dst_factor = .one_minus_src_alpha,
+                    .src_factor = .one_minus_dst,
+                    .dst_factor = .zero,
                 },
                 .alpha = .{},
             },
@@ -353,7 +366,11 @@ const App = struct {
         self.cur_dir_ls = DirList.init(allocator);
         self.config = std.StringHashMap(*PathStr).init(allocator);
         self.open_file_history = PathStrList.init(allocator);
+
         self.img_path.set("");
+        try self.setImageObj(try ImageObj.initEmptyRGBA(gctx, allocator, 256, 256));
+        // 초기화 이후 config 적용 시점에 호출될 것이다.
+        //self.updateViewScale(false);
 
         return self;
     }
@@ -409,10 +426,7 @@ const App = struct {
             self.img_rend_bg = null;
         }
 
-        if (self.img_obj != null) {
-            self.img_obj.?.deinit(self.gctx);
-            self.img_obj = null;
-        }
+        self.img_obj.deinit(self.gctx);
         self.img_path.set("");
         if (self.reset_view_scale_on_clear) {
             self.img_view_scale = 1.0;
@@ -424,7 +438,7 @@ const App = struct {
 
         self.img_rend_bg = self.gctx.createBindGroup(self.img_rend_bgl, &.{
             .{ .binding = 0, .buffer_handle = self.gctx.uniforms.buffer, .offset = 0, .size = @sizeOf(MeshUniforms) },
-            .{ .binding = 1, .texture_view_handle = self.img_obj.?.texv },
+            .{ .binding = 1, .texture_view_handle = self.img_obj.texv },
             .{ .binding = 2, .sampler_handle = self.near_samp },
         });
         self.edge_rend_bg = self.gctx.createBindGroup(self.edge_rend_bgl, &.{
@@ -432,7 +446,7 @@ const App = struct {
         });
         self.sel_rend_bg = self.gctx.createBindGroup(self.sel_rend_bgl, &.{
             .{ .binding = 0, .buffer_handle = self.gctx.uniforms.buffer, .offset = 0, .size = @sizeOf(MeshUniforms) },
-            .{ .binding = 1, .texture_view_handle = self.img_obj.?.texv },
+            .{ .binding = 1, .texture_view_handle = self.img_obj.texv },
             .{ .binding = 2, .sampler_handle = self.near_samp },
         });
     }
@@ -441,8 +455,8 @@ const App = struct {
         // adjust image scale or window size
         var fb_w = self.gctx.swapchain_descriptor.width;
         var fb_h = self.gctx.swapchain_descriptor.height;
-        const img_w = self.img_obj.?.w;
-        const img_h = self.img_obj.?.h;
+        const img_w = self.img_obj.w;
+        const img_h = self.img_obj.h;
 
         var img_fit = self.img_fit;
         if (img_fit == .autoAspect) {
@@ -475,8 +489,9 @@ const App = struct {
         }
     }
 
-    fn onOpenAppImage(self: *Self, fpath: []const u8) !void {
+    fn onOpenImageFile(self: *Self, fpath: []const u8) !void {
         self.img_path.set(fpath);
+
         const dpath = std.fs.path.dirname(fpath) orelse "";
         if (dpath.len == 0) return;
 
@@ -517,13 +532,26 @@ const App = struct {
     fn updateConfigMap(self: *Self) !void {
         var buf: [1024]u8 = undefined;
 
-        if (self.config.getEntry("reset_view_scale_on_clear")) |kv| {
+        {
+            const k = "reset_view_scale_on_clear";
+            const r = try self.config.getOrPut(k);
             const s = try std.fmt.bufPrintZ(&buf, "{d}", .{@intFromBool(self.reset_view_scale_on_clear)});
-            kv.value_ptr.*.set(s);
+            if (!r.found_existing) {
+                r.key_ptr.* = try self.allocator.dupe(u8, k);
+                r.value_ptr.* = try self.allocator.create(PathStr);
+            }
+            r.value_ptr.*.set(s);
         }
-        if (self.config.getEntry("img_fit")) |kv| {
+
+        {
+            const k = "img_fit";
+            const r = try self.config.getOrPut(k);
             const s = try std.fmt.bufPrintZ(&buf, "{d}", .{@intFromEnum(self.img_fit)});
-            kv.value_ptr.*.set(s);
+            if (!r.found_existing) {
+                r.key_ptr.* = try self.allocator.dupe(u8, k);
+                r.value_ptr.* = try self.allocator.create(PathStr);
+            }
+            r.value_ptr.*.set(s);
         }
     }
 
@@ -533,24 +561,171 @@ const App = struct {
         }
         if (self.config.get("img_fit")) |v| {
             self.img_fit = @enumFromInt(std.fmt.parseInt(u32, v.str, 10) catch 0);
+            self.updateViewScale(true);
         }
+    }
+};
+
+const ResizeDialog = struct {
+    allocator: Allocator,
+    unit_type: i32 = 0,
+    extend_canvas_only: bool = false,
+    buf_w: [256:0]u8 = [_:0]u8{0} ** 256,
+    val_w: i32 = 0,
+    buf_h: [256:0]u8 = [_:0]u8{0} ** 256,
+    val_h: i32 = 0,
+
+    const Self = @This();
+
+    pub fn create(allocator: Allocator) !*ResizeDialog {
+        var dlg = try allocator.create(Self);
+        dlg.* = Self{
+            .allocator = allocator,
+        };
+        dlg.unit_type = 0;
+        dlg.extend_canvas_only = false;
+        return dlg;
+    }
+
+    pub fn destroy(self: *Self) void {
+        self.allocator.destroy(self);
+    }
+
+    pub fn ui(self: *Self) !bool {
+        var ui_opened: bool = true;
+        var is_active: bool = true;
+        _ = zgui.begin("Resize Image", .{
+            .popen = &ui_opened,
+            .flags = zgui.WindowFlags{ .no_collapse = true },
+        });
+        if (ui_opened) {
+            zgui.text("Unit (Flip on Negative):", .{});
+            zgui.sameLine(.{});
+            if (zgui.radioButton("Percent", .{ .active = (self.unit_type == 0) })) {
+                self.unit_type = 0;
+            }
+            zgui.sameLine(.{});
+            if (zgui.radioButton("Pixel", .{ .active = (self.unit_type == 1) })) {
+                self.unit_type = 1;
+            }
+            if (self.unit_type == 0) { // percent
+                _ = try std.fmt.bufPrintZ(&self.buf_w, "{d}", .{100});
+                _ = try std.fmt.bufPrintZ(&self.buf_h, "{d}", .{100});
+            } else { // pixel
+                _ = try std.fmt.bufPrintZ(&self.buf_w, "{d}", .{app.img_obj.w});
+                _ = try std.fmt.bufPrintZ(&self.buf_h, "{d}", .{app.img_obj.h});
+            }
+            if (zgui.inputText(
+                "Width",
+                .{
+                    .buf = self.buf_w[0..],
+                    .flags = .{ .chars_decimal = true },
+                },
+            )) {
+                self.val_w = std.fmt.parseInt(i32, &self.buf_w, 10) catch 0;
+            }
+            if (zgui.inputText(
+                "Height",
+                .{
+                    .buf = self.buf_h[0..],
+                    .flags = .{ .chars_decimal = true },
+                },
+            )) {
+                self.val_h = std.fmt.parseInt(i32, &self.buf_h, 10) catch 0;
+            }
+            _ = zgui.checkbox("Extend Canvas Only", .{ .v = &self.extend_canvas_only });
+            if (zgui.button("OK", .{})) {
+                // calc new image size
+                var new_img_w: i32 = @intCast(app.img_obj.w);
+                var new_img_h: i32 = @intCast(app.img_obj.h);
+                if (self.unit_type == 0) {
+                    new_img_w = @intFromFloat(@as(f32, @floatFromInt(new_img_w)) * @as(f32, @floatFromInt(self.val_w)) * 0.01);
+                    new_img_h = @intFromFloat(@as(f32, @floatFromInt(new_img_h)) * @as(f32, @floatFromInt(self.val_h)) * 0.01);
+                } else {
+                    new_img_w = self.val_w;
+                    new_img_h = self.val_h;
+                }
+                // apply by resize method
+                if (self.extend_canvas_only) {
+                    //
+                } else {
+                    //
+                }
+                is_active = false;
+            }
+            zgui.sameLine(.{});
+            if (zgui.button("Cancel", .{})) {
+                is_active = false;
+            }
+        } else {
+            is_active = false;
+        }
+        zgui.end();
+        return is_active;
+    }
+};
+
+fn snapValue(T: type, v: T, src_size: u32, dst_size: u32) T {
+    const snapped = @floor(v * @as(T, @floatFromInt(dst_size)) / @as(T, @floatFromInt(src_size)));
+    return snapped * @as(T, @floatFromInt(src_size)) / @as(T, @floatFromInt(dst_size));
+}
+
+const SelectRect = struct {
+    beg_pos: [2]f64 = .{ -1, -1 },
+    end_pos: [2]f64 = .{ -1, -1 },
+    min_pos: [2]f64,
+    max_pos: [2]f64,
+    fb_w: u32,
+    fb_h: u32,
+    img_w: u32,
+    img_h: u32,
+
+    const Self = @This();
+
+    fn start(self: *Self, p: [2]f64, fb_w: u32, fb_h: u32, img_w: u32, img_h: u32) void {
+        self.beg_pos = p;
+        self.fb_w = fb_w;
+        self.fb_h = fb_h;
+        self.img_w = img_w;
+        self.img_h = img_h;
+        self.updateEnd(p);
+    }
+
+    fn updateEnd(self: *Self, p: [2]f64) void {
+        self.end_pos = p;
+        self.min_pos[0] = @min(self.beg_pos[0], self.end_pos[0]);
+        self.min_pos[1] = @min(self.beg_pos[1], self.end_pos[1]);
+        self.max_pos[0] = @max(self.beg_pos[0], self.end_pos[0]);
+        self.max_pos[1] = @max(self.beg_pos[1], self.end_pos[1]);
+        // snap to image pixel boundary
+        self.min_pos[0] = snapValue(f64, self.min_pos[0], self.fb_w, self.img_w);
+        self.min_pos[1] = snapValue(f64, self.min_pos[1], self.fb_h, self.img_h);
+        self.max_pos[0] = snapValue(f64, self.max_pos[0], self.fb_w, self.img_w);
+        self.max_pos[1] = snapValue(f64, self.max_pos[1], self.fb_h, self.img_h);
+    }
+
+    fn isZero(self: *Self) bool {
+        return (self.beg_pos[0] == self.end_pos[0] and self.beg_pos[1] and self.end_pos[1]);
     }
 };
 
 // global vars
 var g_allocator: Allocator = undefined;
 var app: *App = undefined;
-var cmd_arg_fpath: ?PathStr = null;
+var cmd_args: std.ArrayList(PathStr) = undefined;
 
-var file_dlg_obj: ?*file_dlg.FileDialog = null;
-var file_dlg_open: bool = false;
 var sel_but_img_obj: ImageObj = undefined;
 var line_but_img_obj: ImageObj = undefined;
-var resize_dlg_open: bool = false;
+
+var file_dlg_obj: *FileDialog = undefined;
+var is_file_dlg_open: bool = false;
+
+var resize_dlg_obj: *ResizeDialog = undefined;
+var is_resize_dlg_open: bool = false;
+
 var is_sel_box_active: bool = false;
 var is_sel_box_dragging: bool = false;
-var sel_beg_pos: [2]f64 = .{ -1.0, -1.0 };
-var sel_end_pos: [2]f64 = .{ -1.0, -1.0 };
+var sel_rect: SelectRect = undefined;
 
 fn getAppFilePath(path: *PathStr, filename: []const u8) []const u8 {
     const exe_dir = std.fs.selfExeDirPath(path.buf[0..]) catch ".";
@@ -627,10 +802,13 @@ fn savePathStrMap(str_map: *std.StringHashMap(*PathStr), fpath: []const u8) !voi
 }
 
 // this is callback used by cocoa framework
-export fn appOpenFile(fpath: [*c]const u8) callconv(.C) c_int {
+export fn appOpenFile(fpath: [*c]const u8, index: c_int, count: c_int) callconv(.C) c_int {
     const ret: c_int = 1;
-    cmd_arg_fpath = .{};
-    cmd_arg_fpath.?.set(std.mem.sliceTo(fpath, 0));
+    if (index == 0) {
+        cmd_args.clearAndFree();
+        _ = cmd_args.addManyAsSlice(@intCast(count)) catch {};
+    }
+    cmd_args.items[@intCast(index)].set(std.mem.sliceTo(fpath, 0));
     return ret;
 }
 
@@ -665,7 +843,7 @@ fn openAppImage(fpath: [:0]const u8, is_saving: bool) !void {
         std.debug.print("failed to open app image: {s}\n", .{fpath});
     } else {
         try app.setImageObj(img_obj);
-        try app.onOpenAppImage(fpath);
+        try app.onOpenImageFile(fpath);
     }
 }
 
@@ -797,13 +975,20 @@ fn createDepthTexture(gctx: *zgpu.GraphicsContext) struct {
 fn updateGUI() !void {
     if (zgui.beginMainMenuBar()) {
         if (zgui.beginMenu("File", true)) {
-            if (zgui.menuItem("Load", .{})) {
-                file_dlg_open = true;
-                file_dlg_obj.?.is_saving = false;
+            if (zgui.menuItem("New", .{})) {
+                is_resize_dlg_open = true;
             }
-            if (zgui.menuItem("Save", .{})) {
-                file_dlg_open = true;
-                file_dlg_obj.?.is_saving = true;
+            if (zgui.menuItem("Load", .{})) {
+                is_file_dlg_open = true;
+                file_dlg_obj.is_saving = false;
+            }
+            if (zgui.menuItem("Load and Add", .{})) {
+                is_file_dlg_open = true;
+                file_dlg_obj.is_saving = false;
+            }
+            if (zgui.menuItem("Save As", .{})) {
+                is_file_dlg_open = true;
+                file_dlg_obj.is_saving = true;
             }
             zgui.separator();
             for (app.open_file_history.items) |path| {
@@ -813,12 +998,28 @@ fn updateGUI() !void {
             }
             zgui.endMenu();
         }
+        if (zgui.beginMenu("Select", true)) {
+            if (zgui.menuItem("Select All", .{})) {
+                //
+            }
+            zgui.endMenu();
+        }
         if (zgui.beginMenu("Edit", true)) {
             if (zgui.menuItem("Clear", .{})) {
+                const img_w = app.img_obj.w;
+                const img_h = app.img_obj.h;
                 app.clearImage();
+                try app.setImageObj(try ImageObj.initEmptyRGBA(app.gctx, app.allocator, img_w, img_h));
+                app.updateViewScale(true);
+            }
+            if (zgui.menuItem("Copy Selected", .{})) {
+                //
+            }
+            if (zgui.menuItem("Paste from Clipboard", .{})) {
+                // TODO : paste
             }
             if (zgui.menuItem("Resize", .{})) {
-                resize_dlg_open = true;
+                is_resize_dlg_open = true;
             }
             if (zgui.menuItem("Crop Selected", .{})) {
                 // TODO : crop
@@ -867,34 +1068,14 @@ fn updateGUI() !void {
     }
     zgui.end();
 
-    if (file_dlg_open) {
+    if (is_file_dlg_open) {
         var need_confirm: bool = false;
-        std.debug.assert(file_dlg_obj != null);
-        file_dlg_open = try file_dlg_obj.?.ui(&need_confirm);
+        is_file_dlg_open = try file_dlg_obj.ui(&need_confirm);
         //_ = need_confirm;
     }
 
-    if (resize_dlg_open) {
-        if (zgui.begin("Resize Image", .{})) {
-            var buf_w: [256:0]u8 = [_:0]u8{0} ** 256;
-            var buf_h: [256:0]u8 = [_:0]u8{0} ** 256;
-            _ = try std.fmt.bufPrintZ(&buf_w, "{d}", .{app.img_obj.?.w});
-            _ = try std.fmt.bufPrintZ(&buf_h, "{d}", .{app.img_obj.?.h});
-            _ = zgui.inputText("Width", .{ .buf = buf_w[0..], .flags = .{
-                .chars_decimal = true,
-            } });
-            _ = zgui.inputText("Height", .{ .buf = buf_h[0..], .flags = .{
-                .chars_decimal = true,
-            } });
-            if (zgui.button("OK", .{})) {
-                resize_dlg_open = false;
-            }
-            zgui.sameLine(.{});
-            if (zgui.button("Cancel", .{})) {
-                resize_dlg_open = false;
-            }
-        }
-        zgui.end();
+    if (is_resize_dlg_open) {
+        is_resize_dlg_open = try resize_dlg_obj.ui();
     }
 }
 
@@ -902,6 +1083,7 @@ var prevOnKey: ?zglfw.Window.KeyFn = null;
 var prevOnScroll: ?zglfw.Window.ScrollFn = null;
 var prevOnMouseButton: ?zglfw.Window.MouseButtonFn = null;
 var prevOnCursorPos: ?zglfw.Window.CursorPosFn = null;
+var prevOnDrop: ?zglfw.Window.DropFn = null;
 
 fn onKey(
     window: *zglfw.Window,
@@ -969,17 +1151,24 @@ fn onMouseButton(
     action: zglfw.Action,
     mods: zglfw.Mods,
 ) callconv(.C) void {
+    const fb_w = app.gctx.swapchain_descriptor.width;
+    const fb_h = app.gctx.swapchain_descriptor.height;
+    const img_w = app.img_obj.w;
+    const img_h = app.img_obj.h;
+
     if (button == .left) {
         if (action == .press) {
             is_sel_box_active = true;
             is_sel_box_dragging = true;
-            sel_beg_pos = window.getCursorPos();
+            sel_rect.start(window.getCursorPos(), fb_w, fb_h, img_w, img_h);
         } else if (action == .release) {
             is_sel_box_dragging = false;
-            const cur_pos = window.getCursorPos();
-            if (sel_beg_pos[0] == cur_pos[0] and sel_beg_pos[1] == cur_pos[1]) {
-                is_sel_box_active = false;
-            }
+            sel_rect.updateEnd(window.getCursorPos());
+        }
+    } else if (button == .right) {
+        if (action == .release) {
+            is_sel_box_active = false;
+            is_sel_box_dragging = false;
         }
     }
 
@@ -994,15 +1183,30 @@ fn onCursorPos(
     ypos: f64,
 ) callconv(.C) void {
     if (is_sel_box_dragging) {
-        sel_end_pos = .{ xpos, ypos };
-        std.debug.print(
-            "beg=({d},{d}), end=({d},{d})\n",
-            .{ sel_beg_pos[0], sel_beg_pos[1], sel_end_pos[0], sel_end_pos[1] },
-        );
+        sel_rect.updateEnd(.{ xpos, ypos });
     }
 
     if (prevOnCursorPos != null) {
         prevOnCursorPos.?(window, xpos, ypos);
+    }
+}
+
+fn onDrop(
+    window: *zglfw.Window,
+    path_count: i32,
+    paths: [*][*:0]const u8,
+) callconv(.C) void {
+    if (path_count == 1) {
+        openAppImage(std.mem.sliceTo(paths[0], 0), false) catch {};
+    } else {
+        var i: i32 = 0;
+        while (i < path_count) : (i += 1) {
+            //
+        }
+    }
+
+    if (prevOnDrop != null) {
+        prevOnDrop.?(window, path_count, paths);
     }
 }
 
@@ -1011,18 +1215,18 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     g_allocator = gpa.allocator();
 
+    cmd_args = std.ArrayList(PathStr).init(g_allocator);
     if (builtin.os.tag == .macos) {
         // do nothing because it will be handled by [NSApplication application:openFile:]
     } else {
         const args = try std.process.argsAlloc(g_allocator);
         defer std.process.argsFree(g_allocator, args);
+        cmd_args.clearAndFree();
+        _ = try cmd_args.addManyAsSlice(args.len - 1);
         for (0.., args) |i, arg| {
-            if (i == 1) {
-                cmd_arg_fpath = .{};
-                cmd_arg_fpath.?.set(arg);
-                cmd_arg_fpath.?.replaceChar('\\', '/');
-                break;
-            }
+            if (i == 0) continue;
+            cmd_args.items[i - 1].set(arg);
+            cmd_args.items[i - 1].replaceChar('\\', '/');
         }
     }
 
@@ -1099,23 +1303,31 @@ pub fn main() !void {
 
     zgui.getStyle().scaleAllSizes(scale_factor);
 
-    if (cmd_arg_fpath != null) {
-        try openAppImage(cmd_arg_fpath.?.str_z, false);
+    if (cmd_args.items.len > 0) {
+        if (cmd_args.items.len == 1) {
+            try openAppImage(cmd_args.items[0].str_z, false);
+        } else {
+            // open multiple as a grid shape
+        }
     }
 
     var hist_fpath_str: PathStr = undefined;
     _ = getAppFilePath(&hist_fpath_str, "zxbrush_content/history.txt");
     loadPathStrList(g_allocator, &app.open_file_history, hist_fpath_str.str) catch {};
 
-    if (file_dlg_obj == null) {
-        file_dlg_obj = try file_dlg.FileDialog.create(
-            g_allocator,
-            "File Dialog",
-            app.img_ext_set,
-            false,
-            openAppImage,
-        );
-    }
+    file_dlg_obj = try FileDialog.create(
+        g_allocator,
+        "File Dialog",
+        app.img_ext_set,
+        false,
+        openAppImage,
+    );
+    is_file_dlg_open = false;
+
+    resize_dlg_obj = try ResizeDialog.create(
+        g_allocator,
+    );
+    is_resize_dlg_open = false;
 
     var sel_but_img_path: PathStr = undefined;
     _ = getAppFilePath(&sel_but_img_path, "zxbrush_content/ui_sel_but.png");
@@ -1137,6 +1349,7 @@ pub fn main() !void {
     prevOnScroll = window.setScrollCallback(onScroll);
     prevOnMouseButton = window.setMouseButtonCallback(onMouseButton);
     prevOnCursorPos = window.setCursorPosCallback(onCursorPos);
+    prevOnDrop = window.setDropCallback(onDrop);
 
     while (!window.shouldClose()) {
         zglfw.pollEvents();
@@ -1168,10 +1381,8 @@ pub fn main() !void {
         //     200.0,
         // );
         // const cam_world_to_clip = zm.mul(cam_world_to_view, cam_view_to_clip);
-        const img_w = if (app.img_obj == null) 0 else app.img_obj.?.w;
-        const img_h = if (app.img_obj == null) 0 else app.img_obj.?.h;
-        const view_img_w: i32 = @intFromFloat(@as(f32, @floatFromInt(img_w)) * app.img_view_scale);
-        const view_img_h: i32 = @intFromFloat(@as(f32, @floatFromInt(img_h)) * app.img_view_scale);
+        const view_img_w: i32 = @intFromFloat(@as(f32, @floatFromInt(app.img_obj.w)) * app.img_view_scale);
+        const view_img_h: i32 = @intFromFloat(@as(f32, @floatFromInt(app.img_obj.h)) * app.img_view_scale);
         const object_to_world = zm.scaling(
             @floatFromInt(view_img_w),
             @floatFromInt(view_img_h),
@@ -1182,17 +1393,20 @@ pub fn main() !void {
             @floatFromInt(view_img_h + 2),
             1.0,
         );
-        const sel_w: f32 = @floatCast(@abs(sel_end_pos[0] - sel_beg_pos[0]));
-        const sel_h: f32 = @floatCast(@abs(sel_end_pos[1] - sel_beg_pos[1]));
+        const sel_w: f32 = @as(f32, @floatCast(@abs(sel_rect.max_pos[0] - sel_rect.min_pos[0])));
+        const sel_h: f32 = @as(f32, @floatCast(@abs(sel_rect.max_pos[1] - sel_rect.min_pos[1])));
         const half_sel_w = sel_w * 0.5;
         const half_sel_h = sel_h * 0.5;
         const sel_scale = zm.scaling(sel_w, sel_h, 1.0);
         const sel_translate = zm.translation(
-            @as(f32, @floatCast(sel_beg_pos[0])) - _half_fb_w + half_sel_w,
-            _fb_h - @as(f32, @floatCast(sel_beg_pos[1])) - _half_fb_h + half_sel_h,
+            @as(f32, @floatCast(sel_rect.min_pos[0])) - _half_fb_w + half_sel_w,
+            _fb_h - @as(f32, @floatCast(sel_rect.max_pos[1])) - _half_fb_h + half_sel_h,
             0.0,
         );
-        const object_to_world_sel = zm.mul(sel_scale, sel_translate);
+        const object_to_world_sel = zm.mul(
+            zm.scaling(app.img_view_scale, app.img_view_scale, 1.0),
+            zm.mul(sel_scale, sel_translate),
+        );
         const cam_world_to_clip = zm.orthographicLh(
             _fb_w,
             _fb_h,
@@ -1298,7 +1512,6 @@ pub fn main() !void {
     try app.updateConfigMap();
     try savePathStrMap(&app.config, cfg_fpath_str.str);
 
-    if (file_dlg_obj != null) {
-        file_dlg_obj.?.destroy();
-    }
+    file_dlg_obj.destroy();
+    resize_dlg_obj.destroy();
 }

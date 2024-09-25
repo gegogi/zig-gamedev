@@ -451,7 +451,7 @@ static GLFWbool initializeTIS(void)
 //////////////////////////////////////////////////
 // modified by gegogi
 void *appModHandle = NULL;
-typedef int (*PFN_appOpenFile)(const char*);
+typedef int (*PFN_appOpenFile)(const char*, int, int);
 PFN_appOpenFile pfn_appOpenFile = NULL;
 
 void ensureAppOpenFileFunc()
@@ -471,7 +471,7 @@ void ensureAppOpenFileFunc()
     ensureAppOpenFileFunc();
     NSLog(@"application:openFile:%s\n", [filename UTF8String]);
     if (pfn_appOpenFile) {
-        return (*pfn_appOpenFile)([filename UTF8String]);
+        return (*pfn_appOpenFile)([filename UTF8String], 0, 1);
     }
     return NO;
 }
@@ -479,16 +479,15 @@ void ensureAppOpenFileFunc()
 - (void)application:(NSApplication *)sender openFiles:(NSArray<NSString *>*)filenames
 {
     ensureAppOpenFileFunc();
-    NSEnumerator *e = [filenames objectEnumerator];
-    NSString *s = nil;
-    int i = 0;
-    while (s = (NSString*)[e nextObject]) {
-        NSLog(@"application:openFiles:%d,%s\n", i, [s UTF8String]);
-        if (pfn_appOpenFile) {
-            (*pfn_appOpenFile)([s UTF8String]);
-            break;
+    if (pfn_appOpenFile) {
+        NSEnumerator *e = [filenames objectEnumerator];
+        int fc = [filenames count];
+        int i = 0;
+        while (NSString* s = (NSString*)[e nextObject]) {
+            NSLog(@"application:openFiles:%d,%s\n", i, [s UTF8String]);
+            (*pfn_appOpenFile)([s UTF8String], i, fc);
+            ++i;
         }
-        ++i;
     }
 }
 //////////////////////////////////////////////////

@@ -46,8 +46,9 @@ pub const img_fs = global ++ common ++
 \\      @location(0) position: vec3<f32>,
 \\      @location(1) texcoord: vec2<f32>,
 \\  ) -> @location(0) vec4<f32> {
-\\      let color = vec4(textureSample(img_tex, samp, texcoord).xyz, 1.0);
-\\      return vec4(color.xyz, 1.0);
+\\      let color = textureSample(img_tex, samp, texcoord);
+\\      // use precompiled alpha notation
+\\      return vec4(color.xyz * color.w, color.w);
 \\  }
 \\
 ;
@@ -105,6 +106,7 @@ pub const sel_fs = global ++ common ++
 \\      @location(1) texcoord: vec2<f32>,
 \\  ) -> @location(0) vec4<f32> {
 \\      return vec4(0.5, 0.0, 0.0, 0.5);
+\\      //return vec4(1, 1, 1, 1);
 \\  }
 \\
 ;

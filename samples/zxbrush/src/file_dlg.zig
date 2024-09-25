@@ -194,7 +194,13 @@ pub const FileDialog = struct {
 
     const Self = @This();
 
-    pub fn create(allocator: Allocator, title: []const u8, ext_set: ?*ExtSet, is_saving: bool, file_open_handler: *const fn (fpath: [:0]const u8, is_saving: bool) anyerror!void) !*FileDialog {
+    pub fn create(
+        allocator: Allocator,
+        title: []const u8,
+        ext_set: ?*ExtSet,
+        is_saving: bool,
+        file_open_handler: *const fn (fpath: [:0]const u8, is_saving: bool) anyerror!void,
+    ) !*FileDialog {
         var dlg = try allocator.create(Self);
         dlg.* = Self{
             .allocator = allocator,
@@ -261,7 +267,10 @@ pub const FileDialog = struct {
             if (zgui.beginListBox("Items", .{})) {
                 for (0.., self.cur_dir_ls.name_list.items) |i, fname| {
                     var selected = (i == self.cur_dir_item);
-                    const changed = zgui.selectableStatePtr(fname.str_z, .{ .pselected = &selected, .flags = zgui.SelectableFlags{ .allow_double_click = true } });
+                    const changed = zgui.selectableStatePtr(fname.str_z, .{
+                        .pselected = &selected,
+                        .flags = zgui.SelectableFlags{ .allow_double_click = true },
+                    });
                     const hovered = zgui.isItemHovered(.{});
                     if (hovered) {
                         mouse_dbl_clk = zgui.isMouseDoubleClicked(zgui.MouseButton.left);
@@ -275,7 +284,13 @@ pub const FileDialog = struct {
                 }
                 zgui.endListBox();
             }
-            if (zgui.inputText("File Name", .{ .buf = self.cur_file_text.str_z, .flags = zgui.InputTextFlags{ .auto_select_all = true } })) {
+            if (zgui.inputText(
+                "File Name",
+                .{
+                    .buf = self.cur_file_text.str_z,
+                    .flags = zgui.InputTextFlags{ .auto_select_all = true },
+                },
+            )) {
                 std.debug.print("fileName={s}", .{self.cur_file_text.str_z});
             }
             var confirm_msg: MsgStr = undefined;
