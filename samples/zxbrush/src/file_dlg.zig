@@ -143,6 +143,7 @@ pub const DirList = struct {
     pub fn populate(self: *Self, dpath: []const u8, add_sub_dirs: bool, ext_set: ?*ExtSet) !void {
         self.is_populated = true;
         self.dpath.set(dpath);
+        self.dpath.replaceChar('\\', '/');
         if (add_sub_dirs) {
             const par_dir = try self.allocator.create(PathStr);
             par_dir.set("../");
@@ -247,7 +248,7 @@ pub const FileDialog = struct {
         self.msg.set("");
     }
 
-    pub fn ui(self: *Self, p_need_confirm: *bool) anyerror!bool {
+    pub fn ui(self: *Self, p_need_confirm: *bool) bool {
         if (base_font != null) zgui.pushFont(base_font.?);
 
         const need_confirm = p_need_confirm.*;
@@ -261,7 +262,7 @@ pub const FileDialog = struct {
         if (ui_opened) {
             //const cur_dir_text = self.cur_dir;
             if (!self.cur_dir_ls.is_populated) {
-                try self.cur_dir_ls.populate(self.cur_dir.str, true, self.ext_set);
+                self.cur_dir_ls.populate(self.cur_dir.str, true, self.ext_set) catch unreachable;
             }
             zgui.text("{s}", .{self.cur_dir.str});
             if (zgui.beginListBox("Items", .{})) {
@@ -327,9 +328,9 @@ pub const FileDialog = struct {
                                 valid_path = false;
                             };
                             if (valid_path) {
-                                try self.reset(open_path.str, "");
+                                self.reset(open_path.str, "") catch unreachable;
                             } else {
-                                try self.reset(".", "");
+                                self.reset(".", "") catch unreachable;
                                 self.msg.set("Error while opening the path.");
                             }
                         } else {
@@ -350,9 +351,9 @@ pub const FileDialog = struct {
                             }
                             /////////////////////////////////////////////
                             if (can_open) {
-                                try self.file_open_handler(open_path.str_z, self.is_saving);
+                                self.file_open_handler(open_path.str_z, self.is_saving) catch {};
                                 is_active = false;
-                                try self.reset(".", "");
+                                self.reset(".", "") catch unreachable;
                             } else {
                                 if (need_confirm) {
                                     self.msg.set("Check <");
@@ -362,7 +363,7 @@ pub const FileDialog = struct {
                             }
                         }
                     } else {
-                        try self.reset(".", "");
+                        self.reset(".", "") catch unreachable;
                         is_active = false;
                     }
                 }

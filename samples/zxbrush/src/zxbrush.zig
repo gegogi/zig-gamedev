@@ -170,7 +170,12 @@ const ImageObj = struct {
             bytes_per_component,
             is_hdr,
         );
-        if (tex_format == .undef) return error.FormatNotSupported;
+        if (tex_format == .undef) {
+            return error.FormatNotSupported;
+        }
+        if (w > 8192 or h > 8192) {
+            return error.TooBig;
+        }
 
         self.tex = gctx.createTexture(.{
             .usage = .{ .texture_binding = true, .copy_dst = true },
@@ -182,6 +187,7 @@ const ImageObj = struct {
             .format = tex_format,
             .mip_level_count = 1,
         });
+
         self.texv = gctx.createTextureView(self.tex, .{});
         gctx.queue.writeTexture(
             .{ .texture = gctx.lookupResource(self.tex).? },
@@ -193,6 +199,7 @@ const ImageObj = struct {
             u8,
             data,
         );
+
         return self;
     }
 
@@ -368,7 +375,8 @@ const App = struct {
         self.open_file_history = PathStrList.init(allocator);
 
         self.img_path.set("");
-        try self.setImageObj(try ImageObj.initEmptyRGBA(gctx, allocator, 256, 256));
+        const img_obj = try ImageObj.initEmptyRGBA(gctx, allocator, 256, 256);
+        self.setImageObj(img_obj);
         // 초기화 이후 config 적용 시점에 호출될 것이다.
         //self.updateViewScale(false);
 
@@ -433,7 +441,7 @@ const App = struct {
         }
     }
 
-    fn setImageObj(self: *Self, img_obj: ImageObj) !void {
+    fn setImageObj(self: *Self, img_obj: ImageObj) void {
         self.img_obj = img_obj;
 
         self.img_rend_bg = self.gctx.createBindGroup(self.img_rend_bgl, &.{
@@ -499,7 +507,7 @@ const App = struct {
             var dir = try std.fs.openDirAbsolute(dpath, .{});
             defer dir.close();
             try dir.setAsCwd();
-            std.debug.print("chdir: {s}", .{dpath});
+            std.debug.print("chdir: {s}\n", .{dpath});
             self.cur_dir_ls.reset();
             try self.cur_dir_ls.populate(dpath, false, self.img_ext_set);
         }
@@ -591,7 +599,7 @@ const ResizeDialog = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn ui(self: *Self) !bool {
+    pub fn ui(self: *Self) bool {
         var ui_opened: bool = true;
         var is_active: bool = true;
         _ = zgui.begin("Resize Image", .{
@@ -609,11 +617,11 @@ const ResizeDialog = struct {
                 self.unit_type = 1;
             }
             if (self.unit_type == 0) { // percent
-                _ = try std.fmt.bufPrintZ(&self.buf_w, "{d}", .{100});
-                _ = try std.fmt.bufPrintZ(&self.buf_h, "{d}", .{100});
+                _ = std.fmt.bufPrintZ(&self.buf_w, "{d}", .{100}) catch unreachable;
+                _ = std.fmt.bufPrintZ(&self.buf_h, "{d}", .{100}) catch unreachable;
             } else { // pixel
-                _ = try std.fmt.bufPrintZ(&self.buf_w, "{d}", .{app.img_obj.w});
-                _ = try std.fmt.bufPrintZ(&self.buf_h, "{d}", .{app.img_obj.h});
+                _ = std.fmt.bufPrintZ(&self.buf_w, "{d}", .{app.img_obj.w}) catch unreachable;
+                _ = std.fmt.bufPrintZ(&self.buf_h, "{d}", .{app.img_obj.h}) catch unreachable;
             }
             if (zgui.inputText(
                 "Width",
@@ -665,43 +673,54 @@ const ResizeDialog = struct {
     }
 };
 
-fn snapValue(T: type, v: T, src_size: u32, dst_size: u32) T {
-    const snapped = @floor(v * @as(T, @floatFromInt(dst_size)) / @as(T, @floatFromInt(src_size)));
-    return snapped * @as(T, @floatFromInt(src_size)) / @as(T, @floatFromInt(dst_size));
+fn snapValue(T: type, v: T, pixel_size: T) T {
+    const snapped = @floor(v / pixel_size);
+    return snapped * pixel_size;
 }
 
 const SelectRect = struct {
-    beg_pos: [2]f64 = .{ -1, -1 },
-    end_pos: [2]f64 = .{ -1, -1 },
+    is_active: bool = false,
+    is_dragging: bool = false,
+    beg_pos: [2]f64 = .{ 0, 0 },
+    end_pos: [2]f64 = .{ 0, 0 },
     min_pos: [2]f64,
     max_pos: [2]f64,
-    fb_w: u32,
-    fb_h: u32,
-    img_w: u32,
-    img_h: u32,
+    view_scale: f64,
 
     const Self = @This();
 
-    fn start(self: *Self, p: [2]f64, fb_w: u32, fb_h: u32, img_w: u32, img_h: u32) void {
+    fn start(self: *Self, p: [2]f64, view_scale: f64) void {
+        self.is_active = true;
+        self.is_dragging = true;
         self.beg_pos = p;
-        self.fb_w = fb_w;
-        self.fb_h = fb_h;
-        self.img_w = img_w;
-        self.img_h = img_h;
+        self.view_scale = view_scale;
         self.updateEnd(p);
     }
 
     fn updateEnd(self: *Self, p: [2]f64) void {
         self.end_pos = p;
+        self.update();
+    }
+
+    fn update(self: *Self) void {
         self.min_pos[0] = @min(self.beg_pos[0], self.end_pos[0]);
         self.min_pos[1] = @min(self.beg_pos[1], self.end_pos[1]);
         self.max_pos[0] = @max(self.beg_pos[0], self.end_pos[0]);
         self.max_pos[1] = @max(self.beg_pos[1], self.end_pos[1]);
         // snap to image pixel boundary
-        self.min_pos[0] = snapValue(f64, self.min_pos[0], self.fb_w, self.img_w);
-        self.min_pos[1] = snapValue(f64, self.min_pos[1], self.fb_h, self.img_h);
-        self.max_pos[0] = snapValue(f64, self.max_pos[0], self.fb_w, self.img_w);
-        self.max_pos[1] = snapValue(f64, self.max_pos[1], self.fb_h, self.img_h);
+        self.min_pos[0] = snapValue(f64, self.min_pos[0], self.view_scale);
+        self.min_pos[1] = snapValue(f64, self.min_pos[1], self.view_scale);
+        self.max_pos[0] = snapValue(f64, self.max_pos[0], self.view_scale);
+        self.max_pos[1] = snapValue(f64, self.max_pos[1], self.view_scale);
+    }
+
+    fn changeViewScale(self: *Self, new_view_scale: f64) void {
+        self.beg_pos[0] = self.beg_pos[0] / self.view_scale * new_view_scale;
+        self.beg_pos[1] = self.beg_pos[1] / self.view_scale * new_view_scale;
+        self.end_pos[0] = self.end_pos[0] / self.view_scale * new_view_scale;
+        self.end_pos[1] = self.end_pos[1] / self.view_scale * new_view_scale;
+        self.view_scale = new_view_scale;
+        self.update();
     }
 
     fn isZero(self: *Self) bool {
@@ -723,8 +742,6 @@ var is_file_dlg_open: bool = false;
 var resize_dlg_obj: *ResizeDialog = undefined;
 var is_resize_dlg_open: bool = false;
 
-var is_sel_box_active: bool = false;
-var is_sel_box_dragging: bool = false;
 var sel_rect: SelectRect = undefined;
 
 fn getAppFilePath(path: *PathStr, filename: []const u8) []const u8 {
@@ -746,6 +763,7 @@ fn loadPathStrList(allocator: Allocator, str_list: *PathStrList, fpath: []const 
     while (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
         const line_str = try allocator.create(PathStr);
         line_str.set(line);
+        line_str.replaceChar('\\', '/');
         try str_list.append(line_str);
     }
 }
@@ -776,6 +794,7 @@ fn loadPathStrMap(allocator: Allocator, str_map: *std.StringHashMap(*PathStr), f
         const key_str = try allocator.dupe(u8, key);
         const value_str = try allocator.create(PathStr);
         value_str.set(value);
+        value_str.replaceChar('\\', '/');
         try str_map.put(key_str, value_str);
     }
 
@@ -812,39 +831,35 @@ export fn appOpenFile(fpath: [*c]const u8, index: c_int, count: c_int) callconv(
     return ret;
 }
 
-fn openAppImage(fpath: [:0]const u8, is_saving: bool) !void {
-    std.debug.print("opening file: {s}\n", .{fpath});
+fn openAppImage(_fpath: [:0]const u8, is_saving: bool) !void {
+    var fpath: PathStr = undefined;
+    fpath.set(_fpath);
+    fpath.replaceChar('\\', '/');
+
+    std.debug.print("opening file: {s}\n", .{fpath.str});
 
     app.clearImage();
 
     var img_obj: ImageObj = undefined;
-    var failed = false;
     if (is_saving) {
         // TODO : implement save
     } else {
+        errdefer |err| {
+            std.debug.print("failed to open app image: {s}, reason: {s}\n", .{ fpath.str, @errorName(err) });
+        }
         if (useSdl) {
-            const image = sdl_image.load(@ptrCast(fpath)) catch unreachable;
+            const image = try sdl_image.load(@ptrCast(_fpath));
             defer image.free();
-            img_obj = ImageObj.initWithSdlImage(app.gctx, image) catch blk: {
-                failed = true;
-                break :blk undefined;
-            };
+            img_obj = try ImageObj.initWithSdlImage(app.gctx, image);
         } else {
-            var image = try zstbi.Image.loadFromFile(@ptrCast(fpath), 4);
+            var image = try zstbi.Image.loadFromFile(@ptrCast(_fpath), 4);
             defer image.deinit();
-            img_obj = ImageObj.initWithStiImage(app.gctx, image) catch blk: {
-                failed = true;
-                break :blk undefined;
-            };
+            img_obj = try ImageObj.initWithStiImage(app.gctx, image);
         }
     }
 
-    if (failed) {
-        std.debug.print("failed to open app image: {s}\n", .{fpath});
-    } else {
-        try app.setImageObj(img_obj);
-        try app.onOpenImageFile(fpath);
-    }
+    app.setImageObj(img_obj);
+    try app.onOpenImageFile(fpath.str);
 }
 
 fn openNeighborImage(offset: i32) !void {
@@ -972,7 +987,7 @@ fn createDepthTexture(gctx: *zgpu.GraphicsContext) struct {
     return .{ .tex = tex, .texv = texv };
 }
 
-fn updateGUI() !void {
+fn updateUI() void {
     if (zgui.beginMainMenuBar()) {
         if (zgui.beginMenu("File", true)) {
             if (zgui.menuItem("New", .{})) {
@@ -1009,7 +1024,8 @@ fn updateGUI() !void {
                 const img_w = app.img_obj.w;
                 const img_h = app.img_obj.h;
                 app.clearImage();
-                try app.setImageObj(try ImageObj.initEmptyRGBA(app.gctx, app.allocator, img_w, img_h));
+                const img_obj = ImageObj.initEmptyRGBA(app.gctx, app.allocator, img_w, img_h) catch unreachable;
+                app.setImageObj(img_obj);
                 app.updateViewScale(true);
             }
             if (zgui.menuItem("Copy Selected", .{})) {
@@ -1070,12 +1086,12 @@ fn updateGUI() !void {
 
     if (is_file_dlg_open) {
         var need_confirm: bool = false;
-        is_file_dlg_open = try file_dlg_obj.ui(&need_confirm);
+        is_file_dlg_open = file_dlg_obj.ui(&need_confirm);
         //_ = need_confirm;
     }
 
     if (is_resize_dlg_open) {
-        is_resize_dlg_open = try resize_dlg_obj.ui();
+        is_resize_dlg_open = resize_dlg_obj.ui();
     }
 }
 
@@ -1125,6 +1141,7 @@ fn onScroll(
     if (rbutton_state == .press or rbutton_state == .repeat or lshift_state == .press or lshift_state == .repeat) {
         if (app.img_path.str.len != 0) {
             app.img_view_scale += @as(f32, @floatCast(yoffset)) * 0.1;
+            sel_rect.changeViewScale(app.img_view_scale);
             handled = true;
         }
     } else if (rbutton_state == .release) {
@@ -1145,6 +1162,17 @@ fn onScroll(
     }
 }
 
+inline fn getCenteredPos(pos: [2]f64, fb_w: u32, fb_h: u32) [2]f64 {
+    const _fb_w: f64 = @floatFromInt(fb_w);
+    const _fb_h: f64 = @floatFromInt(fb_h);
+    const _half_fb_w: f64 = _fb_w * 0.5;
+    const _half_fb_h: f64 = _fb_h * 0.5;
+    return [2]f64{
+        (pos[0] - _half_fb_w),
+        (_fb_h - pos[1] - _half_fb_h),
+    };
+}
+
 fn onMouseButton(
     window: *zglfw.Window,
     button: zglfw.MouseButton,
@@ -1153,22 +1181,19 @@ fn onMouseButton(
 ) callconv(.C) void {
     const fb_w = app.gctx.swapchain_descriptor.width;
     const fb_h = app.gctx.swapchain_descriptor.height;
-    const img_w = app.img_obj.w;
-    const img_h = app.img_obj.h;
+    const cpos = getCenteredPos(window.getCursorPos(), fb_w, fb_h);
 
     if (button == .left) {
         if (action == .press) {
-            is_sel_box_active = true;
-            is_sel_box_dragging = true;
-            sel_rect.start(window.getCursorPos(), fb_w, fb_h, img_w, img_h);
+            sel_rect.start(cpos, app.img_view_scale);
         } else if (action == .release) {
-            is_sel_box_dragging = false;
-            sel_rect.updateEnd(window.getCursorPos());
+            sel_rect.updateEnd(cpos);
+            sel_rect.is_dragging = false;
         }
     } else if (button == .right) {
         if (action == .release) {
-            is_sel_box_active = false;
-            is_sel_box_dragging = false;
+            sel_rect.is_active = false;
+            sel_rect.is_dragging = false;
         }
     }
 
@@ -1182,8 +1207,12 @@ fn onCursorPos(
     xpos: f64,
     ypos: f64,
 ) callconv(.C) void {
-    if (is_sel_box_dragging) {
-        sel_rect.updateEnd(.{ xpos, ypos });
+    const fb_w = app.gctx.swapchain_descriptor.width;
+    const fb_h = app.gctx.swapchain_descriptor.height;
+    const cpos = getCenteredPos(.{ xpos, ypos }, fb_w, fb_h);
+
+    if (sel_rect.is_dragging) {
+        sel_rect.updateEnd(cpos);
     }
 
     if (prevOnCursorPos != null) {
@@ -1305,7 +1334,7 @@ pub fn main() !void {
 
     if (cmd_args.items.len > 0) {
         if (cmd_args.items.len == 1) {
-            try openAppImage(cmd_args.items[0].str_z, false);
+            openAppImage(cmd_args.items[0].str_z, false) catch {};
         } else {
             // open multiple as a grid shape
         }
@@ -1358,8 +1387,6 @@ pub fn main() !void {
         const fb_h = gctx.swapchain_descriptor.height;
         const _fb_w: f32 = @floatFromInt(fb_w);
         const _fb_h: f32 = @floatFromInt(fb_h);
-        const _half_fb_w = _fb_w * 0.5;
-        const _half_fb_h = _fb_h * 0.5;
         //const win_size = window.getSize();
 
         zgui.backend.newFrame(fb_w, fb_h);
@@ -1367,7 +1394,7 @@ pub fn main() !void {
         zgui.setNextWindowPos(.{ .x = 20.0, .y = 20.0, .cond = .first_use_ever });
         zgui.setNextWindowSize(.{ .w = -1.0, .h = -1.0, .cond = .first_use_ever });
 
-        try updateGUI();
+        updateUI();
 
         // const cam_world_to_view = zm.lookToLh(
         //     zm.loadArr3(.{ 0.0, 0.0, -1.0 }),
@@ -1393,20 +1420,15 @@ pub fn main() !void {
             @floatFromInt(view_img_h + 2),
             1.0,
         );
-        const sel_w: f32 = @as(f32, @floatCast(@abs(sel_rect.max_pos[0] - sel_rect.min_pos[0])));
-        const sel_h: f32 = @as(f32, @floatCast(@abs(sel_rect.max_pos[1] - sel_rect.min_pos[1])));
-        const half_sel_w = sel_w * 0.5;
-        const half_sel_h = sel_h * 0.5;
+        const sel_w: f32 = @as(f32, @floatCast(sel_rect.max_pos[0] - sel_rect.min_pos[0]));
+        const sel_h: f32 = @as(f32, @floatCast(sel_rect.max_pos[1] - sel_rect.min_pos[1]));
         const sel_scale = zm.scaling(sel_w, sel_h, 1.0);
         const sel_translate = zm.translation(
-            @as(f32, @floatCast(sel_rect.min_pos[0])) - _half_fb_w + half_sel_w,
-            _fb_h - @as(f32, @floatCast(sel_rect.max_pos[1])) - _half_fb_h + half_sel_h,
+            @floatCast((sel_rect.min_pos[0] + sel_rect.max_pos[0]) * 0.5),
+            @floatCast((sel_rect.min_pos[1] + sel_rect.max_pos[1]) * 0.5),
             0.0,
         );
-        const object_to_world_sel = zm.mul(
-            zm.scaling(app.img_view_scale, app.img_view_scale, 1.0),
-            zm.mul(sel_scale, sel_translate),
-        );
+        const object_to_world_sel = zm.mul(sel_scale, sel_translate);
         const cam_world_to_clip = zm.orthographicLh(
             _fb_w,
             _fb_h,
@@ -1465,7 +1487,7 @@ pub fn main() !void {
                     pass.setBindGroup(0, img_rend_bg, &.{mem.offset});
                     pass.drawIndexed(6, 1, 0, 0, 0);
 
-                    if (is_sel_box_active) {
+                    if (sel_rect.is_active) {
                         pass.setPipeline(sel_rend_pipe);
                         pass.setBindGroup(0, sel_rend_bg, &.{mem.offset});
                         pass.drawIndexed(6, 1, 0, 0, 0);
