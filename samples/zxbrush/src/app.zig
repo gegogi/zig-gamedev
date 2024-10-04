@@ -23,6 +23,9 @@ const content_dir = @import("build_options").content_dir;
 
 const depth_tex_format = wgpu.TextureFormat.depth16_unorm;
 
+const toolbox_len: f32 = 700;
+const toolbox_thickness: f32 = 110;
+
 const Vertex = extern struct {
     position: [3]f32,
     texcoord: [2]f32,
@@ -52,9 +55,47 @@ const ImageFit = enum(i32) {
     count,
 };
 
+const ToolboxPos = enum(i32) {
+    auto = 0,
+    left,
+    top,
+    right,
+    bottom,
+    count,
+};
+
+const ToolFunc = enum(i32) {
+    select = 0,
+    draw_line,
+    draw_circle,
+    count,
+};
+
+fn beginEnumCombo(
+    label: [:0]const u8,
+    comptime T: type,
+    cur_sel: T,
+) struct { opened: bool, sel: ?T } {
+    var sel: ?T = null;
+    const cur_sel_str = @tagName(cur_sel);
+    if (zgui.beginCombo(label, .{ .preview_value = cur_sel_str })) {
+        for (0..@intCast(@intFromEnum(T.count))) |i| {
+            const enum_val: T = @enumFromInt(i);
+            if (zgui.selectable(@tagName(@as(T, enum_val)), .{})) {
+                sel = enum_val;
+                break;
+            }
+        }
+        return .{ .opened = true, .sel = sel };
+    } else {
+        return .{ .opened = false, .sel = null };
+    }
+}
+
 const AppConfig = struct {
     reset_view_scale_on_clear: bool = false,
     img_fit: ImageFit = .original,
+    toolbox_pos: ToolboxPos = .auto,
 
     const Self = @This();
 
@@ -139,6 +180,7 @@ pub const App = struct {
     cursor_x: f64 = 0.0,
     cursor_y: f64 = 0.0,
     sel_rect: SelectRect = undefined,
+    sel_tool_func: ToolFunc = .select,
 
     ///////////////////////////////////////////
     // static env
@@ -606,29 +648,9 @@ pub const App = struct {
         }
     }
 
-    pub fn updateUI(self: *Self) void {
-        if (zgui.begin("Toolbox", .{})) {
-            const sel_but_tex_id = self.gctx.lookupResource(self.sel_but_img_obj.texv).?;
-            const line_but_tex_id = self.gctx.lookupResource(self.line_but_img_obj.texv).?;
-            if (zgui.imageButton("Select", sel_but_tex_id, .{ .w = 64, .h = 64 })) {
-                // select
-            }
-            zgui.sameLine(.{});
-            if (zgui.imageButton("Line", line_but_tex_id, .{ .w = 64, .h = 64 })) {
-                // line
-            }
-        }
-        zgui.end();
-
-        if (self.is_file_dlg_open) {
-            var need_confirm: bool = false;
-            self.is_file_dlg_open = self.file_dlg_obj.ui(&need_confirm);
-            //_ = need_confirm;
-        }
-
-        if (self.is_resize_dlg_open) {
-            self.is_resize_dlg_open = self.resize_dlg_obj.ui();
-        }
+    fn updateUI_menuBar(self: *Self, menubar_h: *f32) void {
+        const img_w = self.img_obj.w;
+        const img_h = self.img_obj.h;
 
         if (zgui.beginMainMenuBar()) {
             if (zgui.beginMenu("File", true)) {
@@ -663,8 +685,6 @@ pub const App = struct {
             }
             if (zgui.beginMenu("Edit", true)) {
                 if (zgui.menuItem("Clear", .{})) {
-                    const img_w = self.img_obj.w;
-                    const img_h = self.img_obj.h;
                     self.clearImage();
                     const img_obj = ImageObj.initEmptyRGBA(
                         self.gctx,
@@ -697,17 +717,26 @@ pub const App = struct {
                 if (zgui.checkbox("Reset View Scale on Clear", .{ .v = &self.config.reset_view_scale_on_clear })) {
                     willCloseMenu = true;
                 }
-                const cur_img_fit_str = @tagName(self.config.img_fit);
-                if (zgui.beginCombo("Image Fit", .{ .preview_value = cur_img_fit_str })) {
-                    for (0..@intCast(@intFromEnum(ImageFit.count))) |i| {
-                        if (zgui.selectable(@tagName(@as(ImageFit, @enumFromInt(i))), .{})) {
-                            self.config.img_fit = @enumFromInt(i);
+                {
+                    const c = beginEnumCombo("Image Fit", ImageFit, self.config.img_fit);
+                    if (c.opened) {
+                        zgui.endCombo();
+                        if (c.sel != null) {
+                            self.config.img_fit = c.sel.?;
                             self.updateViewScale(true);
                             willCloseMenu = true;
-                            break;
                         }
                     }
-                    zgui.endCombo();
+                }
+                {
+                    const c = beginEnumCombo("Toolbox Pos", ToolboxPos, self.config.toolbox_pos);
+                    if (c.opened) {
+                        zgui.endCombo();
+                        if (c.sel != null) {
+                            self.config.toolbox_pos = c.sel.?;
+                            willCloseMenu = true;
+                        }
+                    }
                 }
                 // combo를 선택했을 때 상위 메뉴까지 한번에 닫는 코드
                 //if (willCloseMenu) {
@@ -715,13 +744,18 @@ pub const App = struct {
                 //}
                 zgui.endMenu();
             }
+            menubar_h.* = zgui.getWindowSize()[1];
             zgui.endMainMenuBar();
         }
+    }
 
+    fn updateUI_statusBar(self: *Self) void {
         const vp = zgui.getMainViewport();
         const vp_pos = vp.getPos();
         const vp_size = vp.getSize();
         const frame_h = zgui.getFrameHeight();
+
+        // status bar
         zgui.setNextWindowPos(.{
             .x = vp_pos[0],
             .y = vp_pos[1] + vp_size[1] - frame_h,
@@ -750,7 +784,7 @@ pub const App = struct {
         const fname = std.fs.path.basenamePosix(self.img_path.str);
         const s = std.fmt.bufPrintZ(
             status_msg.buf[0..],
-            "fname={s}, size=({d},{d}), pos=({d},{d})",
+            "fname={s}, size=({d},{d}), pos=({d:.2},{d:.2})",
             .{
                 fname,
                 self.img_obj.w,
@@ -764,6 +798,120 @@ pub const App = struct {
             //zgui.text("{s}", .{"test"});
         }
         zgui.end();
+    }
+
+    fn updateUI_toolBox(self: *Self, menubar_h: f32) void {
+        const vp = zgui.getMainViewport();
+        const vp_pos = vp.getPos();
+        const vp_size = vp.getSize();
+        const frame_h = zgui.getFrameHeight();
+
+        const toolbox_flags = zgui.WindowFlags{
+            .no_collapse = true,
+            .no_title_bar = true,
+            .no_docking = true,
+            .no_resize = true,
+        };
+        var toolbox_pos: ToolboxPos = self.config.toolbox_pos;
+        if (toolbox_pos == .auto) {
+            toolbox_pos = if (self.img_obj.w >= self.img_obj.h) .left else .top;
+        }
+        switch (toolbox_pos) {
+            .left => {
+                zgui.setNextWindowPos(.{
+                    .x = vp_pos[0],
+                    .y = vp_pos[1] + menubar_h,
+                });
+                zgui.setNextWindowSize(.{
+                    .w = toolbox_thickness,
+                    .h = toolbox_len,
+                });
+            },
+            .top => {
+                zgui.setNextWindowPos(.{
+                    .x = vp_pos[0],
+                    .y = vp_pos[1] + menubar_h,
+                });
+                zgui.setNextWindowSize(.{
+                    .w = toolbox_len,
+                    .h = toolbox_thickness,
+                });
+            },
+            .right => {
+                zgui.setNextWindowPos(.{
+                    .x = vp_pos[0] + vp_size[0] - toolbox_thickness,
+                    .y = vp_pos[1] + menubar_h,
+                });
+                zgui.setNextWindowSize(.{
+                    .w = toolbox_thickness,
+                    .h = toolbox_len,
+                });
+            },
+            .bottom => {
+                zgui.setNextWindowPos(.{
+                    .x = vp_pos[0],
+                    .y = vp_pos[1] + vp_size[1] - frame_h - toolbox_thickness,
+                });
+                zgui.setNextWindowSize(.{
+                    .w = toolbox_len,
+                    .h = toolbox_thickness,
+                });
+            },
+            else => {},
+        }
+        if (zgui.begin("Toolbox", .{ .flags = toolbox_flags })) {
+            const ToolButton = struct {
+                label: [:0]const u8,
+                icon_texv: zgpu.TextureViewHandle,
+                func_id: ToolFunc,
+            };
+            const tool_buttons = [_]ToolButton{
+                .{ .label = "Select", .icon_texv = self.sel_but_img_obj.texv, .func_id = .select },
+                .{ .label = "Line", .icon_texv = self.line_but_img_obj.texv, .func_id = .draw_line },
+                .{ .label = "Circle", .icon_texv = self.line_but_img_obj.texv, .func_id = .draw_circle },
+            };
+            for (tool_buttons, 0..) |b, i| {
+                const t = self.gctx.lookupResource(b.icon_texv).?;
+                const use_sel_col = (b.func_id == self.sel_tool_func);
+                if (use_sel_col) {
+                    zgui.pushStyleColor4f(.{ .idx = zgui.StyleCol.button, .c = .{ 0.8, 0, 0, 1 } });
+                    zgui.pushStyleColor4f(.{ .idx = zgui.StyleCol.button_active, .c = .{ 1, 0, 0, 1 } });
+                    zgui.pushStyleColor4f(.{ .idx = zgui.StyleCol.button_hovered, .c = .{ 1, 0, 0, 1 } });
+                }
+                if (zgui.imageButton(b.label, t, .{ .w = 64, .h = 64 })) {
+                    self.sel_tool_func = b.func_id;
+                }
+                if (use_sel_col) {
+                    zgui.popStyleColor(.{});
+                    zgui.popStyleColor(.{});
+                    zgui.popStyleColor(.{});
+                }
+                if (self.config.toolbox_pos == .top or self.config.toolbox_pos == .bottom) {
+                    if (i < tool_buttons.len - 1) {
+                        zgui.sameLine(.{});
+                    }
+                }
+            }
+        }
+        zgui.end();
+    }
+
+    pub fn updateUI(self: *Self) void {
+        var menubar_h: f32 = 0;
+
+        self.updateUI_menuBar(&menubar_h);
+        self.updateUI_statusBar();
+        self.updateUI_toolBox(menubar_h);
+
+        if (self.is_file_dlg_open) {
+            var need_confirm: bool = false;
+            self.is_file_dlg_open = self.file_dlg_obj.ui(&need_confirm);
+            //_ = need_confirm;
+        }
+
+        if (self.is_resize_dlg_open) {
+            self.is_resize_dlg_open = self.resize_dlg_obj.ui();
+        }
     }
 
     pub fn renderMainPass(self: *Self, swapchain_texv: wgpu.TextureView, encoder: wgpu.CommandEncoder) void {

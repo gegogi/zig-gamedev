@@ -274,7 +274,7 @@ pub fn main() !void {
     );
     defer zgui.backend.deinit();
 
-    try app.loadConfig();
+    app.loadConfig() catch {};
 
     zgui.getStyle().scaleAllSizes(scale_factor);
 
