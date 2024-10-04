@@ -11,7 +11,7 @@ var button_font: ?zgui.Font = null;
 pub fn StrWithBuf(comptime N: u32) type {
     return struct {
         const Self = @This();
-        const Dim: u32 = N;
+        pub const Dim: u32 = N;
 
         buf: [N]u8 = undefined,
         str: []u8 = &[_]u8{},
@@ -198,7 +198,7 @@ pub const FileDialog = struct {
     pub fn create(
         allocator: Allocator,
         title: []const u8,
-        ext_set: ?*ExtSet,
+        exts: []const []const u8,
         is_saving: bool,
         file_open_handler: *const fn (fpath: [:0]const u8, is_saving: bool) anyerror!void,
     ) !*FileDialog {
@@ -206,7 +206,7 @@ pub const FileDialog = struct {
         dlg.* = Self{
             .allocator = allocator,
             .title = undefined,
-            .ext_set = ext_set,
+            .ext_set = null,
             .is_saving = is_saving,
             .file_open_handler = file_open_handler,
             .is_confirmed = false,
@@ -216,6 +216,7 @@ pub const FileDialog = struct {
             .cur_file_text = undefined,
             .msg = undefined,
         };
+        dlg.ext_set = createExtSet(allocator, exts) catch null;
         dlg.title.set(title);
         try dlg.set_cur_dir(".");
         dlg.cur_file_text.set("");
@@ -226,6 +227,12 @@ pub const FileDialog = struct {
     pub fn destroy(self: *Self) void {
         self.reset(".", "") catch unreachable;
         self.cur_dir_ls.deinit();
+
+        if (self.ext_set != null) {
+            self.ext_set.?.clearAndFree();
+            self.allocator.destroy(self.ext_set.?);
+        }
+
         self.allocator.destroy(self);
     }
 
@@ -378,3 +385,72 @@ pub const FileDialog = struct {
         return is_active;
     }
 };
+
+pub const PathStrList = std.ArrayList(*PathStr);
+
+pub fn loadPathStrList(allocator: Allocator, str_list: *PathStrList, fpath: []const u8) !void {
+    var file_obj = try std.fs.openFileAbsolute(fpath, .{ .mode = .read_only });
+    defer file_obj.close();
+    var buf_reader = std.io.bufferedReader(file_obj.reader());
+    var reader = buf_reader.reader();
+
+    var line_buf: [1024]u8 = undefined;
+    while (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
+        const line_str = try allocator.create(PathStr);
+        line_str.set(line);
+        line_str.replaceChar('\\', '/');
+        try str_list.append(line_str);
+    }
+}
+
+pub fn savePathStrList(str_list: *PathStrList, fpath: []const u8) !void {
+    var file_obj = try std.fs.createFileAbsolute(fpath, .{});
+    defer file_obj.close();
+    var buf_writer = std.io.bufferedWriter(file_obj.writer());
+    var writer = buf_writer.writer();
+
+    for (str_list.items) |path_str| {
+        _ = try writer.write(path_str.str);
+        _ = try writer.write("\n");
+    }
+    try buf_writer.flush();
+}
+
+pub fn loadPathStrMap(allocator: Allocator, str_map: *std.StringHashMap(*PathStr), fpath: []const u8) !void {
+    var file_obj = try std.fs.openFileAbsolute(fpath, .{ .mode = .read_only });
+    defer file_obj.close();
+    var buf_reader = std.io.bufferedReader(file_obj.reader());
+    var reader = buf_reader.reader();
+
+    var line_buf: [1024]u8 = undefined;
+    while (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
+        const key = std.mem.sliceTo(line, '=');
+        const value = line[key.len + 1 ..];
+        const key_str = try allocator.dupe(u8, key);
+        const value_str = try allocator.create(PathStr);
+        value_str.set(value);
+        value_str.replaceChar('\\', '/');
+        try str_map.put(key_str, value_str);
+    }
+
+    // var iter = str_map.iterator();
+    // while (iter.next()) |kv| {
+    //     std.debug.print("k={s}, v={s}\n", .{ kv.key_ptr.*, kv.value_ptr.*.str });
+    // }
+}
+
+pub fn savePathStrMap(str_map: *std.StringHashMap(*PathStr), fpath: []const u8) !void {
+    var file_obj = try std.fs.createFileAbsolute(fpath, .{});
+    defer file_obj.close();
+    var buf_writer = std.io.bufferedWriter(file_obj.writer());
+    var writer = buf_writer.writer();
+
+    var iter = str_map.iterator();
+    while (iter.next()) |kv| {
+        _ = try writer.write(kv.key_ptr.*);
+        _ = try writer.write("=");
+        _ = try writer.write(kv.value_ptr.*.str);
+        _ = try writer.write("\n");
+    }
+    try buf_writer.flush();
+}
