@@ -483,7 +483,8 @@ void ensureAppOpenFileFunc()
         NSEnumerator *e = [filenames objectEnumerator];
         int fc = [filenames count];
         int i = 0;
-        while (NSString* s = (NSString*)[e nextObject]) {
+        NSString* s = nil;
+        while (s = (NSString*)[e nextObject]) {
             NSLog(@"application:openFiles:%d,%s\n", i, [s UTF8String]);
             (*pfn_appOpenFile)([s UTF8String], i, fc);
             ++i;

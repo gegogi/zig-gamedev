@@ -69,16 +69,16 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
 
     @import("zsdl").link_SDL2(exe);
     @import("zsdl").link_SDL2_image(exe);
-    const sdl2_libs_path = b.dependency("sdl2-prebuilt", .{}).path("").getPath(b);
+    //const sdl2_libs_path = b.dependency("sdl2-prebuilt", .{}).path("").getPath(b);
 
-    @import("zsdl").addLibraryPathsTo(sdl2_libs_path, exe);
-    @import("zsdl").addRPathsTo(sdl2_libs_path, exe);
+    @import("zsdl").prebuilt.addLibraryPathsTo(exe);
+    //@import("zsdl").addRPathsTo(sdl2_libs_path, exe);
 
-    if (@import("zsdl").install_SDL2(b, options.target.result, sdl2_libs_path, .bin)) |install_sdl2_step| {
-        b.getInstallStep().dependOn(install_sdl2_step);
+    if (@import("zsdl").prebuilt.install_SDL2(b, options.target.result, .bin)) |install_sdl2_step| {
+        exe.step.dependOn(install_sdl2_step);
     }
-    if (@import("zsdl").install_SDL2_image(b, options.target.result, sdl2_libs_path, .bin)) |install_sdl2_image_step| {
-        b.getInstallStep().dependOn(install_sdl2_image_step);
+    if (@import("zsdl").prebuilt.install_SDL2_image(b, options.target.result, .bin)) |install_sdl2_image_step| {
+        exe.step.dependOn(install_sdl2_image_step);
     }
 
     return exe;
