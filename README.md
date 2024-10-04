@@ -1,6 +1,6 @@
 [Libraries](#libraries) - [Getting Started](#getting-started) - [Sample applications](#sample-applications-native-wgpu) - [Others using zig-gamedev](#others-using-zig-gamedev)
 
-# zig-gamedev project
+# [zig-gamedev](https://github.com/zig-gamedev) dev repo
 
 We build game development ecosystem for [Zig programming language](https://ziglang.org/), every day since July 2021. Please consider [supporting the project](https://github.com/sponsors/hazeycode). We create:
 
@@ -24,11 +24,14 @@ Note: If using Git then you will need [Git LFS](https://git-lfs.github.com/) to 
 
 ### Get Zig
 
-Our [main](https://github.com/zig-gamedev/zig-gamedev/tree/main) branch is currenly tracking Zig **0.13.0-dev.351+64ef45eb0**.
+Our [main](https://github.com/zig-gamedev/zig-gamedev/tree/main) branch is currenly tracking Zig **0.13.0-dev.351+64ef45eb0**. Or you can use the **unstable** [zig-0.14.0 branch](https://github.com/zig-gamedev/zig-gamedev/tree/zig-0.14.0).
 
-Or you can use the **unstable** [zig-0.14.0 branch](https://github.com/zig-gamedev/zig-gamedev/tree/zig-0.14.0).
+[zigup](https://github.com/marler8997/zigup) is recommended for managing compiler versions. To switch to the compiler version after branch checkout:
+```sh
+zigup $(< .zigversion)
+```
 
-[zigup](https://github.com/marler8997/zigup) is recommended for managing compiler versions. Alternatively, you can download and install manually using the links below:
+Alternatively, you can download and install manually using the links below:
 
 | OS/Arch         | Download link               |
 | --------------- | --------------------------- |
@@ -50,13 +53,12 @@ zig build -l
 ```
 
 ## Libraries
-Note: Libs are being migrated from [libs/](libs/) folder in this repo to each their own repository under the [zig-gamedev GitHub organisation](https://github.com/zig-gamedev)
+Note: Libs are being migrated from [libs/](libs/) folder in this repo to each their own repository under the [zig-gamedev GitHub organisation](https://github.com/zig-gamedev). See [migration tracking PR](https://github.com/zig-gamedev/zig-gamedev/pull/668).
 
 | Library                       | Description                                                                                                                |
 |-------------------------------|----------------------------------------------------------------------------------------------------------------------------|
 | **[zaudio](libs/zaudio)**     | Cross-platform audio using [miniaudio](https://github.com/mackron/miniaudio)                                                                         |
 | **[zbullet](libs/zbullet)**   | Build package, [C API](https://github.com/zig-gamedev/zig-gamedev/tree/main/libs/zbullet/libs/cbullet) and bindings for [Bullet physics](https://github.com/bulletphysics/bullet3)                                                                           |
-| **[zd3d12](libs/zd3d12)**     | Helper library for DirectX 12                                                                                 |
 | **[zflecs](libs/zflecs)**     | Build package and bindings for [flecs](https://github.com/SanderMertens/flecs) ECS                                                         |
 | **[zemscripten](libs/zemscripten)**  | Build package and shims for [Emscripten](https://emscripten.org) emsdk |
 | **[zglfw](libs/zglfw)**       | Build package & bindings for [GLFW](https://github.com/glfw/glfw)                                                                          |
