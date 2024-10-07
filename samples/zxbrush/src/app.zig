@@ -180,8 +180,13 @@ pub const App = struct {
 
     cursor_pos_win: zm.Vec = zm.splat(zm.Vec, 0),
     cursor_pos_img: zm.Vec = zm.splat(zm.Vec, 0),
-    sel_rect: SelectRect = undefined,
+
+    is_sel_active: bool = false,
+    is_sel_dragging: bool = false,
+    sel_beg_pos: zm.Vec = undefined,
+    sel_end_pos: zm.Vec = undefined,
     sel_tool_func: ToolFunc = .select,
+
     is_panning: bool = false,
     zoom_scale: f32 = 1.0,
     pan_offset: zm.Vec = zm.splat(zm.Vec, 0),
@@ -791,20 +796,26 @@ pub const App = struct {
         };
         var status_msg: MsgStr = undefined;
         const fname = std.fs.path.basenamePosix(self.img_path.str);
-        const s = std.fmt.bufPrintZ(
-            status_msg.buf[0..],
-            "fname={s}, size=({d},{d}), pos=({d:.2},{d:.2}), ipos=({d:.2},{d:.2})",
-            .{
-                fname,
-                self.img_obj.w,
-                self.img_obj.h,
-                self.cursor_pos_win[0],
-                self.cursor_pos_win[1],
-                self.cursor_pos_img[0],
-                self.cursor_pos_img[1],
-            },
-        ) catch unreachable;
+        const s = std.fmt.bufPrintZ(status_msg.buf[0..], "fname={s}, size=({d},{d}), pos=({d:.2},{d:.2}), ipos=({d:.2},{d:.2})", .{
+            fname,
+            self.img_obj.w,
+            self.img_obj.h,
+            self.cursor_pos_win[0],
+            self.cursor_pos_win[1],
+            self.cursor_pos_img[0],
+            self.cursor_pos_img[1],
+        }) catch unreachable;
         status_msg.setLen(s.len);
+        if (self.is_sel_active) {
+            const minp: zm.Vec = zm.minFast(self.sel_beg_pos, self.sel_end_pos) - self.pan_offset;
+            const maxp: zm.Vec = zm.maxFast(self.sel_beg_pos, self.sel_end_pos) - self.pan_offset;
+            const s2 = std.fmt.bufPrintZ(
+                status_msg.buf[s.len..],
+                ", sel=({d},{d})-({d},{d})",
+                .{ minp[0], minp[1], maxp[0], maxp[1] },
+            ) catch unreachable;
+            status_msg.setLen(s.len + s2.len);
+        }
         if (zgui.begin(status_msg.str_z, .{ .flags = flags })) {
             //zgui.text("{s}", .{"test"});
         }
@@ -937,18 +948,26 @@ pub const App = struct {
         const fb_h = gctx.swapchain_descriptor.height;
         const _fb_w: f32 = @floatFromInt(fb_w);
         const _fb_h: f32 = @floatFromInt(fb_h);
+        const fb_size = zm.loadArr2(.{ _fb_w, _fb_h });
+        var cpan_offset = self.pan_offset;
+        cpan_offset[1] = -cpan_offset[1];
 
+        // image, edge
         const view_img_w: f32 = @as(f32, @floatFromInt(self.img_obj.w)) * self.img_fit_scale * self.zoom_scale;
         const view_img_h: f32 = @as(f32, @floatFromInt(self.img_obj.h)) * self.img_fit_scale * self.zoom_scale;
         const img_scale = zm.scaling(view_img_w, view_img_h, 1.0);
         const edge_scale = zm.scaling(view_img_w + 2.0, view_img_h + 2.0, 1.0);
-        const img_translate = zm.translationV(self.pan_offset);
+        const img_translate = zm.translationV(cpan_offset);
         const img_mat = zm.mul(img_scale, img_translate);
         const edge_mat = zm.mul(edge_scale, img_translate);
 
-        const sel_size = self.sel_rect.max_pos - self.sel_rect.min_pos;
+        // select rect
+        const minp: zm.Vec = getCenteredPos(zm.minFast(self.sel_beg_pos, self.sel_end_pos), fb_size, false);
+        const maxp: zm.Vec = getCenteredPos(zm.maxFast(self.sel_beg_pos, self.sel_end_pos), fb_size, false);
+
+        const sel_size = maxp - minp;
         const sel_scale = zm.scalingV(sel_size);
-        const sel_ctr = (self.sel_rect.min_pos + self.sel_rect.max_pos) * zm.splat(zm.Vec, 0.5) + self.pan_offset;
+        const sel_ctr = (minp + maxp) * zm.splat(zm.Vec, 0.5);
         const sel_translate = zm.translationV(sel_ctr);
         const sel_mat = zm.mul(sel_scale, sel_translate);
 
@@ -1002,7 +1021,7 @@ pub const App = struct {
             pass.setBindGroup(0, img_rend_bg, &.{mem.offset});
             pass.drawIndexed(6, 1, 0, 0, 0);
 
-            if (self.sel_rect.is_active) {
+            if (self.is_sel_active) {
                 pass.setPipeline(sel_rend_pipe);
                 pass.setBindGroup(0, sel_rend_bg, &.{mem.offset});
                 pass.drawIndexed(6, 1, 0, 0, 0);
@@ -1047,16 +1066,27 @@ pub const App = struct {
 
         if (zgui.io.getWantCaptureMouse()) return;
 
+        const fb_w = self.gctx.swapchain_descriptor.width;
+        const fb_h = self.gctx.swapchain_descriptor.height;
+        const fb_size = zm.loadArr2(.{
+            @floatFromInt(fb_w),
+            @floatFromInt(fb_h),
+        });
+
         var handled: bool = false;
         const rbutton_state = self.window.getMouseButton(.right);
         const lshift_state = self.window.getKey(.left_shift);
         //const rshift_state = window.getKey(.right_shift);
         if (rbutton_state == .press or rbutton_state == .repeat or lshift_state == .press or lshift_state == .repeat) {
-            if (self.img_path.str.len != 0) {
-                self.zoom_scale += @as(f32, @floatCast(yoffset)) * 0.1;
-                self.sel_rect.changeViewScale(self.img_fit_scale * self.zoom_scale);
-                handled = true;
-            }
+            const old_zoom_scale = self.img_fit_scale * self.zoom_scale;
+            self.zoom_scale += @as(f32, @floatCast(yoffset)) * 0.1;
+            var sel_beg_cpos = getCenteredPos(self.sel_beg_pos, fb_size, false);
+            var sel_end_cpos = getCenteredPos(self.sel_end_pos, fb_size, false);
+            sel_beg_cpos *= zm.splat(zm.Vec, self.zoom_scale / old_zoom_scale);
+            sel_end_cpos *= zm.splat(zm.Vec, self.zoom_scale / old_zoom_scale);
+            self.sel_beg_pos = getCenteredPos(sel_beg_cpos, fb_size, true);
+            self.sel_end_pos = getCenteredPos(sel_end_cpos, fb_size, true);
+            handled = true;
         } else if (rbutton_state == .release) {
             var openImageOffset: i32 = 0;
             if (yoffset > 0) {
@@ -1081,28 +1111,49 @@ pub const App = struct {
 
         if (zgui.io.getWantCaptureMouse()) return;
 
-        const fb_w = self.gctx.swapchain_descriptor.width;
-        const fb_h = self.gctx.swapchain_descriptor.height;
         const _p = self.window.getCursorPos();
         const pos = zm.loadArr2(.{ @floatCast(_p[0]), @floatCast(_p[1]) });
-        const cpos = getCenteredPos(pos, fb_w, fb_h, false) - self.pan_offset;
 
         if (button == .left) {
             if (action == .press) {
-                self.sel_rect.start(cpos, self.img_fit_scale * self.zoom_scale);
+                self.is_sel_active = true;
+                self.is_sel_dragging = true;
+                self.sel_beg_pos = pos;
+                self.sel_end_pos = pos;
             } else if (action == .release) {
-                self.sel_rect.updateEnd(cpos);
-                self.sel_rect.is_dragging = false;
+                self.is_sel_dragging = false;
+                self.sel_end_pos = pos;
+                const sel_d = zm.abs(self.sel_end_pos - self.sel_beg_pos);
+                if (sel_d[0] == 0 or sel_d[1] == 0) {
+                    self.is_sel_active = false;
+                }
             }
         } else if (button == .right) {
             if (action == .press) {
                 self.is_panning = true;
             } else if (action == .release) {
-                self.sel_rect.is_active = false;
-                self.sel_rect.is_dragging = false;
                 self.is_panning = false;
             }
         }
+    }
+
+    fn getImgPosFromWinPos(self: *Self, wp: zm.Vec) zm.Vec {
+        const fb_w = self.gctx.swapchain_descriptor.width;
+        const fb_h = self.gctx.swapchain_descriptor.height;
+        const fb_size = zm.loadArr2(.{
+            @floatFromInt(fb_w),
+            @floatFromInt(fb_h),
+        });
+        const img_size = zm.loadArr2(.{
+            @floatFromInt(self.img_obj.w),
+            @floatFromInt(self.img_obj.h),
+        });
+
+        var cpan_offset = self.pan_offset;
+        cpan_offset[1] = -cpan_offset[1]; // y 방향은 반대
+        const cpos = getCenteredPos(wp, fb_size, false);
+        const cpos_img = (cpos - cpan_offset) * zm.splat(zm.Vec, 1.0 / (self.img_fit_scale * self.zoom_scale));
+        return getCenteredPos(cpos_img, img_size, true);
     }
 
     pub fn onCursorPos(
@@ -1112,23 +1163,20 @@ pub const App = struct {
     ) void {
         //if (zgui.io.getWantCaptureMouse()) return;
 
-        const fb_w = self.gctx.swapchain_descriptor.width;
-        const fb_h = self.gctx.swapchain_descriptor.height;
+        const old_pos = self.cursor_pos_win;
         const pos = zm.loadArr2(.{ @floatCast(_px), @floatCast(_py) });
-        const old_cpos = getCenteredPos(self.cursor_pos_win, fb_w, fb_h, false) - self.pan_offset;
-        const cpos = getCenteredPos(pos, fb_w, fb_h, false) - self.pan_offset;
 
-        if (self.sel_rect.is_dragging) {
-            self.sel_rect.updateEnd(cpos);
+        if (self.is_sel_dragging) {
+            self.sel_end_pos = pos;
         } else if (self.is_panning) {
-            const cpos_diff = cpos - old_cpos;
-            self.pan_offset += cpos_diff;
+            const pos_diff = pos - old_pos;
+            self.pan_offset += pos_diff;
+            self.sel_beg_pos += pos_diff;
+            self.sel_end_pos += pos_diff;
         }
 
         self.cursor_pos_win = pos;
-
-        const cpos_img = cpos * zm.splat(zm.Vec, 1.0 / (self.img_fit_scale * self.zoom_scale));
-        self.cursor_pos_img = zm.ceil(getCenteredPos(cpos_img, self.img_obj.w, self.img_obj.h, true));
+        self.cursor_pos_img = self.getImgPosFromWinPos(pos);
     }
 
     pub fn onDrop(
@@ -1255,46 +1303,6 @@ fn snapValue(v: zm.Vec, pixel_size: f32) zm.Vec {
     return snapped * zm.splat(zm.Vec, pixel_size);
 }
 
-const SelectRect = struct {
-    is_active: bool = false,
-    is_dragging: bool = false,
-    beg_pos: zm.Vec,
-    end_pos: zm.Vec,
-    min_pos: zm.Vec,
-    max_pos: zm.Vec,
-    view_scale: f32,
-
-    const Self = @This();
-
-    pub fn start(self: *Self, p: zm.Vec, view_scale: f32) void {
-        self.is_active = true;
-        self.is_dragging = true;
-        self.beg_pos = p;
-        self.view_scale = view_scale;
-        self.updateEnd(p);
-    }
-
-    pub fn updateEnd(self: *Self, p: zm.Vec) void {
-        self.end_pos = p;
-        self.update();
-    }
-
-    pub fn update(self: *Self) void {
-        self.min_pos = zm.minFast(self.beg_pos, self.end_pos);
-        self.max_pos = zm.maxFast(self.beg_pos, self.end_pos);
-        // snap to image pixel boundary
-        self.min_pos = snapValue(self.min_pos, self.view_scale);
-        self.max_pos = snapValue(self.max_pos, self.view_scale);
-    }
-
-    pub fn changeViewScale(self: *Self, new_view_scale: f32) void {
-        self.beg_pos *= zm.splat(zm.Vec, new_view_scale / self.view_scale);
-        self.end_pos *= zm.splat(zm.Vec, new_view_scale / self.view_scale);
-        self.view_scale = new_view_scale;
-        self.update();
-    }
-};
-
 fn createRenderPipe(
     allocator: std.mem.Allocator,
     gctx: *zgpu.GraphicsContext,
@@ -1374,9 +1382,9 @@ fn createDepthTexture(gctx: *zgpu.GraphicsContext) struct {
     return .{ .tex = tex, .texv = texv };
 }
 
-inline fn getCenteredPos(pos: zm.Vec, space_w: u32, space_h: u32, reverse: bool) zm.Vec {
-    const w: f32 = @floatFromInt(space_w);
-    const h: f32 = @floatFromInt(space_h);
+inline fn getCenteredPos(pos: zm.Vec, space_size: zm.Vec, reverse: bool) zm.Vec {
+    const w = space_size[0];
+    const h = space_size[1];
     const half_w = w * 0.5;
     const half_h = h * 0.5;
     if (reverse) {
