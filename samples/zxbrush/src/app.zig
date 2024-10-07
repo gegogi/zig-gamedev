@@ -24,7 +24,8 @@ const content_dir = @import("build_options").content_dir;
 const depth_tex_format = wgpu.TextureFormat.depth16_unorm;
 
 const toolbox_len: f32 = 700;
-const toolbox_thickness: f32 = 110;
+const toolbox_thickness: f32 = 56;
+const image_button_size: u32 = 32;
 
 const Vertex = extern struct {
     position: [3]f32,
@@ -177,10 +178,13 @@ pub const App = struct {
     resize_dlg_obj: *ResizeDialog = undefined,
     is_resize_dlg_open: bool = false,
 
-    cursor_x: f64 = 0.0,
-    cursor_y: f64 = 0.0,
+    cursor_pos_win: zm.Vec = zm.splat(zm.Vec, 0),
+    cursor_pos_img: zm.Vec = zm.splat(zm.Vec, 0),
     sel_rect: SelectRect = undefined,
     sel_tool_func: ToolFunc = .select,
+    is_panning: bool = false,
+    zoom_scale: f32 = 1.0,
+    pan_offset: zm.Vec = zm.splat(zm.Vec, 0),
 
     ///////////////////////////////////////////
     // static env
@@ -202,7 +206,7 @@ pub const App = struct {
     ///////////////////////////////////////////
     // dynamic env by image
     img_obj: ImageObj = undefined,
-    img_view_scale: f32 = 1.0,
+    img_fit_scale: f32 = 1.0,
     img_path: PathStr = undefined,
     // binding group
     img_rend_bg: ?zgpu.BindGroupHandle = null,
@@ -373,7 +377,7 @@ pub const App = struct {
         const img_obj = try ImageObj.initEmptyRGBA(gctx, allocator, 256, 256);
         self.setImageObj(img_obj);
         // 초기화 이후 config 적용 시점에 호출될 것이다.
-        //self.updateViewScale(false);
+        //self.updateViewScale(false, true);
 
         self.loadFileHistory() catch {};
 
@@ -421,7 +425,7 @@ pub const App = struct {
         // hdpi mode 에서는 win_size < fb_size 이다.
         // fb_size 는 실제 LCD 상의 픽셀 수를 의미한다.
         //std.debug.print("win_size=({d},{d}), fb_size=({d},{d})\n", .{ win_size[0], win_size[1], fb_size[0], fb_size[1] });
-        self.updateViewScale(false);
+        self.updateViewScale(false, false);
     }
 
     pub fn loadConfig(self: *Self) !void {
@@ -429,7 +433,7 @@ pub const App = struct {
         _ = getDataFilePath(&path, content_dir ++ "config.txt");
         try self.config.load(self.allocator, path.str);
 
-        self.updateViewScale(true);
+        self.updateViewScale(true, true);
     }
 
     pub fn saveConfig(self: *Self) !void {
@@ -467,7 +471,7 @@ pub const App = struct {
         self.img_obj.deinit(self.gctx);
         self.img_path.set("");
         if (self.config.reset_view_scale_on_clear) {
-            self.img_view_scale = 1.0;
+            self.img_fit_scale = 1.0;
         }
     }
 
@@ -489,7 +493,7 @@ pub const App = struct {
         });
     }
 
-    fn updateViewScale(self: *Self, canResizeWin: bool) void {
+    fn updateViewScale(self: *Self, can_resize_win: bool, reset_ui_xform: bool) void {
         // adjust image scale or window size
         var fb_w = self.gctx.swapchain_descriptor.width;
         var fb_h = self.gctx.swapchain_descriptor.height;
@@ -508,22 +512,27 @@ pub const App = struct {
         }
 
         if (img_fit == .original) {
-            self.img_view_scale = 1.0;
+            self.img_fit_scale = 1.0;
         } else if (img_fit == .osScale) {
-            self.img_view_scale = self.os_scale_factor;
+            self.img_fit_scale = self.os_scale_factor;
         } else if (img_fit == .width) {
-            self.img_view_scale = @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(img_w));
+            self.img_fit_scale = @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(img_w));
         } else if (img_fit == .height) {
-            self.img_view_scale = @as(f32, @floatFromInt(fb_h)) / @as(f32, @floatFromInt(img_h));
+            self.img_fit_scale = @as(f32, @floatFromInt(fb_h)) / @as(f32, @floatFromInt(img_h));
         } else if (img_fit == .resizeWin) {
-            if (canResizeWin) {
+            if (can_resize_win) {
                 const win_w = @as(i32, @intFromFloat(@as(f32, @floatFromInt(img_w)) * self.os_scale_factor));
                 const win_h = @as(i32, @intFromFloat(@as(f32, @floatFromInt(img_h)) * self.os_scale_factor));
                 self.window.setSize(win_w, win_h);
                 fb_w = @intFromFloat(@as(f32, @floatFromInt(win_w)) * self.os_scale_factor);
                 fb_h = @intFromFloat(@as(f32, @floatFromInt(win_h)) * self.os_scale_factor);
-                self.img_view_scale = @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(img_w));
+                self.img_fit_scale = @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(img_w));
             }
+        }
+
+        if (reset_ui_xform) {
+            self.zoom_scale = 1.0;
+            self.pan_offset = zm.splat(zm.Vec, 0.0);
         }
     }
 
@@ -550,7 +559,7 @@ pub const App = struct {
         try self.onOpenImageFile(fpath.str);
     }
 
-    pub fn openNeighborImageFile(self: *Self, offset: i32) !void {
+    fn openNeighborImageFile(self: *Self, offset: i32) !void {
         std.debug.assert(offset != 0);
         if (self.img_path.str.len == 0) {
             return;
@@ -631,7 +640,7 @@ pub const App = struct {
 
         try self.saveFileHistory();
 
-        self.updateViewScale(true);
+        self.updateViewScale(true, true);
     }
 
     fn removeFileHistory(self: *Self, fpath: []const u8) void {
@@ -693,7 +702,7 @@ pub const App = struct {
                         img_h,
                     ) catch unreachable;
                     self.setImageObj(img_obj);
-                    self.updateViewScale(true);
+                    self.updateViewScale(true, true);
                 }
                 if (zgui.menuItem("Copy Selected", .{})) {
                     //
@@ -723,7 +732,7 @@ pub const App = struct {
                         zgui.endCombo();
                         if (c.sel != null) {
                             self.config.img_fit = c.sel.?;
-                            self.updateViewScale(true);
+                            self.updateViewScale(true, true);
                             willCloseMenu = true;
                         }
                     }
@@ -784,13 +793,15 @@ pub const App = struct {
         const fname = std.fs.path.basenamePosix(self.img_path.str);
         const s = std.fmt.bufPrintZ(
             status_msg.buf[0..],
-            "fname={s}, size=({d},{d}), pos=({d:.2},{d:.2})",
+            "fname={s}, size=({d},{d}), pos=({d:.2},{d:.2}), ipos=({d:.2},{d:.2})",
             .{
                 fname,
                 self.img_obj.w,
                 self.img_obj.h,
-                self.cursor_x,
-                self.cursor_y,
+                self.cursor_pos_win[0],
+                self.cursor_pos_win[1],
+                self.cursor_pos_img[0],
+                self.cursor_pos_img[1],
             },
         ) catch unreachable;
         status_msg.setLen(s.len);
@@ -814,7 +825,13 @@ pub const App = struct {
         };
         var toolbox_pos: ToolboxPos = self.config.toolbox_pos;
         if (toolbox_pos == .auto) {
-            toolbox_pos = if (self.img_obj.w >= self.img_obj.h) .left else .top;
+            const fb_w = @as(f32, @floatFromInt(self.gctx.swapchain_descriptor.width));
+            const fb_h = @as(f32, @floatFromInt(self.gctx.swapchain_descriptor.height));
+            const img_w = @as(f32, @floatFromInt(self.img_obj.w));
+            const img_h = @as(f32, @floatFromInt(self.img_obj.h));
+            const fb_aspect_ratio = fb_w / fb_h;
+            const img_aspect_ratio = img_w / img_h;
+            toolbox_pos = if (fb_aspect_ratio >= img_aspect_ratio) .left else .top;
         }
         switch (toolbox_pos) {
             .left => {
@@ -824,7 +841,7 @@ pub const App = struct {
                 });
                 zgui.setNextWindowSize(.{
                     .w = toolbox_thickness,
-                    .h = toolbox_len,
+                    .h = @min(toolbox_len, vp_size[1] - menubar_h - frame_h),
                 });
             },
             .top => {
@@ -833,7 +850,7 @@ pub const App = struct {
                     .y = vp_pos[1] + menubar_h,
                 });
                 zgui.setNextWindowSize(.{
-                    .w = toolbox_len,
+                    .w = @min(toolbox_len, vp_size[0]),
                     .h = toolbox_thickness,
                 });
             },
@@ -844,7 +861,7 @@ pub const App = struct {
                 });
                 zgui.setNextWindowSize(.{
                     .w = toolbox_thickness,
-                    .h = toolbox_len,
+                    .h = @min(toolbox_len, vp_size[1] - menubar_h - frame_h),
                 });
             },
             .bottom => {
@@ -853,7 +870,7 @@ pub const App = struct {
                     .y = vp_pos[1] + vp_size[1] - frame_h - toolbox_thickness,
                 });
                 zgui.setNextWindowSize(.{
-                    .w = toolbox_len,
+                    .w = @min(toolbox_len, vp_size[0]),
                     .h = toolbox_thickness,
                 });
             },
@@ -878,7 +895,7 @@ pub const App = struct {
                     zgui.pushStyleColor4f(.{ .idx = zgui.StyleCol.button_active, .c = .{ 1, 0, 0, 1 } });
                     zgui.pushStyleColor4f(.{ .idx = zgui.StyleCol.button_hovered, .c = .{ 1, 0, 0, 1 } });
                 }
-                if (zgui.imageButton(b.label, t, .{ .w = 64, .h = 64 })) {
+                if (zgui.imageButton(b.label, t, .{ .w = image_button_size, .h = image_button_size })) {
                     self.sel_tool_func = b.func_id;
                 }
                 if (use_sel_col) {
@@ -886,7 +903,7 @@ pub const App = struct {
                     zgui.popStyleColor(.{});
                     zgui.popStyleColor(.{});
                 }
-                if (self.config.toolbox_pos == .top or self.config.toolbox_pos == .bottom) {
+                if (toolbox_pos == .top or toolbox_pos == .bottom) {
                     if (i < tool_buttons.len - 1) {
                         zgui.sameLine(.{});
                     }
@@ -921,41 +938,20 @@ pub const App = struct {
         const _fb_w: f32 = @floatFromInt(fb_w);
         const _fb_h: f32 = @floatFromInt(fb_h);
 
-        //const win_size = window.getSize();
+        const view_img_w: f32 = @as(f32, @floatFromInt(self.img_obj.w)) * self.img_fit_scale * self.zoom_scale;
+        const view_img_h: f32 = @as(f32, @floatFromInt(self.img_obj.h)) * self.img_fit_scale * self.zoom_scale;
+        const img_scale = zm.scaling(view_img_w, view_img_h, 1.0);
+        const edge_scale = zm.scaling(view_img_w + 2.0, view_img_h + 2.0, 1.0);
+        const img_translate = zm.translationV(self.pan_offset);
+        const img_mat = zm.mul(img_scale, img_translate);
+        const edge_mat = zm.mul(edge_scale, img_translate);
 
-        // const cam_world_to_view = zm.lookToLh(
-        //     zm.loadArr3(.{ 0.0, 0.0, -1.0 }),
-        //     zm.loadArr3(.{ 0.0, 0.0, 1.0 }),
-        //     zm.loadArr3{.{ 0.0, 1.0, 0.0 }},
-        // );
-        // const cam_view_to_clip = zm.perspectiveFovLh(
-        //     math.pi / @as(f32, 3.0),
-        //     @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(fb_h)),
-        //     0.01,
-        //     200.0,
-        // );
-        // const cam_world_to_clip = zm.mul(cam_world_to_view, cam_view_to_clip);
-        const view_img_w: i32 = @intFromFloat(@as(f32, @floatFromInt(self.img_obj.w)) * self.img_view_scale);
-        const view_img_h: i32 = @intFromFloat(@as(f32, @floatFromInt(self.img_obj.h)) * self.img_view_scale);
-        const object_to_world = zm.scaling(
-            @floatFromInt(view_img_w),
-            @floatFromInt(view_img_h),
-            1.0,
-        );
-        const object_to_world_edge = zm.scaling(
-            @floatFromInt(view_img_w + 2),
-            @floatFromInt(view_img_h + 2),
-            1.0,
-        );
-        const sel_w: f32 = @as(f32, @floatCast(self.sel_rect.max_pos[0] - self.sel_rect.min_pos[0]));
-        const sel_h: f32 = @as(f32, @floatCast(self.sel_rect.max_pos[1] - self.sel_rect.min_pos[1]));
-        const sel_scale = zm.scaling(sel_w, sel_h, 1.0);
-        const sel_translate = zm.translation(
-            @floatCast((self.sel_rect.min_pos[0] + self.sel_rect.max_pos[0]) * 0.5),
-            @floatCast((self.sel_rect.min_pos[1] + self.sel_rect.max_pos[1]) * 0.5),
-            0.0,
-        );
-        const object_to_world_sel = zm.mul(sel_scale, sel_translate);
+        const sel_size = self.sel_rect.max_pos - self.sel_rect.min_pos;
+        const sel_scale = zm.scalingV(sel_size);
+        const sel_ctr = (self.sel_rect.min_pos + self.sel_rect.max_pos) * zm.splat(zm.Vec, 0.5) + self.pan_offset;
+        const sel_translate = zm.translationV(sel_ctr);
+        const sel_mat = zm.mul(sel_scale, sel_translate);
+
         const cam_world_to_clip = zm.orthographicLh(
             _fb_w,
             _fb_h,
@@ -989,9 +985,9 @@ pub const App = struct {
 
             const mem = gctx.uniformsAllocate(MeshUniforms, 1);
             mem.slice[0] = .{
-                .object_to_world = zm.transpose(object_to_world),
-                .object_to_world_edge = zm.transpose(object_to_world_edge),
-                .object_to_world_sel = zm.transpose(object_to_world_sel),
+                .object_to_world = zm.transpose(img_mat),
+                .object_to_world_edge = zm.transpose(edge_mat),
+                .object_to_world_sel = zm.transpose(sel_mat),
                 .world_to_clip = zm.transpose(cam_world_to_clip),
             };
 
@@ -1010,6 +1006,144 @@ pub const App = struct {
                 pass.setPipeline(sel_rend_pipe);
                 pass.setBindGroup(0, sel_rend_bg, &.{mem.offset});
                 pass.drawIndexed(6, 1, 0, 0, 0);
+            }
+        }
+    }
+
+    pub fn onKey(
+        self: *Self,
+        key: zglfw.Key,
+        scancode: i32,
+        action: zglfw.Action,
+        mods: zglfw.Mods,
+    ) void {
+        _ = scancode;
+
+        if (zgui.io.getWantCaptureKeyboard()) return;
+
+        var handled: bool = false;
+        var openImageOffset: i32 = 0;
+        if (key == .left or key == .comma) {
+            if (action == .press or action == .repeat) {
+                openImageOffset = if (mods.shift) -5 else -1;
+            }
+        } else if (key == .right or key == .period) {
+            if (action == .press or action == .repeat) {
+                openImageOffset = if (mods.shift) 5 else 1;
+            }
+        }
+        if (openImageOffset != 0) {
+            self.openNeighborImageFile(openImageOffset) catch {};
+            handled = true;
+        }
+    }
+
+    pub fn onScroll(
+        self: *Self,
+        xoffset: f64,
+        yoffset: f64,
+    ) void {
+        _ = xoffset;
+
+        if (zgui.io.getWantCaptureMouse()) return;
+
+        var handled: bool = false;
+        const rbutton_state = self.window.getMouseButton(.right);
+        const lshift_state = self.window.getKey(.left_shift);
+        //const rshift_state = window.getKey(.right_shift);
+        if (rbutton_state == .press or rbutton_state == .repeat or lshift_state == .press or lshift_state == .repeat) {
+            if (self.img_path.str.len != 0) {
+                self.zoom_scale += @as(f32, @floatCast(yoffset)) * 0.1;
+                self.sel_rect.changeViewScale(self.img_fit_scale * self.zoom_scale);
+                handled = true;
+            }
+        } else if (rbutton_state == .release) {
+            var openImageOffset: i32 = 0;
+            if (yoffset > 0) {
+                openImageOffset = -1;
+            } else if (yoffset < 0) {
+                openImageOffset = 1;
+            }
+            if (openImageOffset != 0) {
+                self.openNeighborImageFile(openImageOffset) catch {};
+                handled = true;
+            }
+        }
+    }
+
+    pub fn onMouseButton(
+        self: *Self,
+        button: zglfw.MouseButton,
+        action: zglfw.Action,
+        mods: zglfw.Mods,
+    ) void {
+        _ = mods;
+
+        if (zgui.io.getWantCaptureMouse()) return;
+
+        const fb_w = self.gctx.swapchain_descriptor.width;
+        const fb_h = self.gctx.swapchain_descriptor.height;
+        const _p = self.window.getCursorPos();
+        const pos = zm.loadArr2(.{ @floatCast(_p[0]), @floatCast(_p[1]) });
+        const cpos = getCenteredPos(pos, fb_w, fb_h, false) - self.pan_offset;
+
+        if (button == .left) {
+            if (action == .press) {
+                self.sel_rect.start(cpos, self.img_fit_scale * self.zoom_scale);
+            } else if (action == .release) {
+                self.sel_rect.updateEnd(cpos);
+                self.sel_rect.is_dragging = false;
+            }
+        } else if (button == .right) {
+            if (action == .press) {
+                self.is_panning = true;
+            } else if (action == .release) {
+                self.sel_rect.is_active = false;
+                self.sel_rect.is_dragging = false;
+                self.is_panning = false;
+            }
+        }
+    }
+
+    pub fn onCursorPos(
+        self: *Self,
+        _px: f64,
+        _py: f64,
+    ) void {
+        //if (zgui.io.getWantCaptureMouse()) return;
+
+        const fb_w = self.gctx.swapchain_descriptor.width;
+        const fb_h = self.gctx.swapchain_descriptor.height;
+        const pos = zm.loadArr2(.{ @floatCast(_px), @floatCast(_py) });
+        const old_cpos = getCenteredPos(self.cursor_pos_win, fb_w, fb_h, false) - self.pan_offset;
+        const cpos = getCenteredPos(pos, fb_w, fb_h, false) - self.pan_offset;
+
+        if (self.sel_rect.is_dragging) {
+            self.sel_rect.updateEnd(cpos);
+        } else if (self.is_panning) {
+            const cpos_diff = cpos - old_cpos;
+            self.pan_offset += cpos_diff;
+        }
+
+        self.cursor_pos_win = pos;
+
+        const cpos_img = cpos * zm.splat(zm.Vec, 1.0 / (self.img_fit_scale * self.zoom_scale));
+        self.cursor_pos_img = zm.ceil(getCenteredPos(cpos_img, self.img_obj.w, self.img_obj.h, true));
+    }
+
+    pub fn onDrop(
+        self: *Self,
+        path_count: i32,
+        paths: [*][*:0]const u8,
+    ) void {
+        //if (zgui.io.getWantCaptureMouse()) return;
+
+        if (path_count == 1) {
+            self.openImageFile(std.mem.sliceTo(paths[0], 0), false) catch {};
+        } else {
+            var i: i32 = 0;
+            while (i < path_count) : (i += 1) {
+                //
             }
         }
     }
@@ -1116,23 +1250,23 @@ const ResizeDialog = struct {
     }
 };
 
-fn snapValue(T: type, v: T, pixel_size: T) T {
-    const snapped = @floor(v / pixel_size);
-    return snapped * pixel_size;
+fn snapValue(v: zm.Vec, pixel_size: f32) zm.Vec {
+    const snapped = zm.floor(v * zm.splat(zm.Vec, 1 / pixel_size));
+    return snapped * zm.splat(zm.Vec, pixel_size);
 }
 
 const SelectRect = struct {
     is_active: bool = false,
     is_dragging: bool = false,
-    beg_pos: [2]f64 = .{ 0, 0 },
-    end_pos: [2]f64 = .{ 0, 0 },
-    min_pos: [2]f64,
-    max_pos: [2]f64,
-    view_scale: f64,
+    beg_pos: zm.Vec,
+    end_pos: zm.Vec,
+    min_pos: zm.Vec,
+    max_pos: zm.Vec,
+    view_scale: f32,
 
     const Self = @This();
 
-    pub fn start(self: *Self, p: [2]f64, view_scale: f64) void {
+    pub fn start(self: *Self, p: zm.Vec, view_scale: f32) void {
         self.is_active = true;
         self.is_dragging = true;
         self.beg_pos = p;
@@ -1140,34 +1274,24 @@ const SelectRect = struct {
         self.updateEnd(p);
     }
 
-    pub fn updateEnd(self: *Self, p: [2]f64) void {
+    pub fn updateEnd(self: *Self, p: zm.Vec) void {
         self.end_pos = p;
         self.update();
     }
 
     pub fn update(self: *Self) void {
-        self.min_pos[0] = @min(self.beg_pos[0], self.end_pos[0]);
-        self.min_pos[1] = @min(self.beg_pos[1], self.end_pos[1]);
-        self.max_pos[0] = @max(self.beg_pos[0], self.end_pos[0]);
-        self.max_pos[1] = @max(self.beg_pos[1], self.end_pos[1]);
+        self.min_pos = zm.minFast(self.beg_pos, self.end_pos);
+        self.max_pos = zm.maxFast(self.beg_pos, self.end_pos);
         // snap to image pixel boundary
-        self.min_pos[0] = snapValue(f64, self.min_pos[0], self.view_scale);
-        self.min_pos[1] = snapValue(f64, self.min_pos[1], self.view_scale);
-        self.max_pos[0] = snapValue(f64, self.max_pos[0], self.view_scale);
-        self.max_pos[1] = snapValue(f64, self.max_pos[1], self.view_scale);
+        self.min_pos = snapValue(self.min_pos, self.view_scale);
+        self.max_pos = snapValue(self.max_pos, self.view_scale);
     }
 
-    pub fn changeViewScale(self: *Self, new_view_scale: f64) void {
-        self.beg_pos[0] = self.beg_pos[0] / self.view_scale * new_view_scale;
-        self.beg_pos[1] = self.beg_pos[1] / self.view_scale * new_view_scale;
-        self.end_pos[0] = self.end_pos[0] / self.view_scale * new_view_scale;
-        self.end_pos[1] = self.end_pos[1] / self.view_scale * new_view_scale;
+    pub fn changeViewScale(self: *Self, new_view_scale: f32) void {
+        self.beg_pos *= zm.splat(zm.Vec, new_view_scale / self.view_scale);
+        self.end_pos *= zm.splat(zm.Vec, new_view_scale / self.view_scale);
         self.view_scale = new_view_scale;
         self.update();
-    }
-
-    pub fn isZero(self: *Self) bool {
-        return (self.beg_pos[0] == self.end_pos[0] and self.beg_pos[1] and self.end_pos[1]);
     }
 };
 
@@ -1248,4 +1372,22 @@ fn createDepthTexture(gctx: *zgpu.GraphicsContext) struct {
     });
     const texv = gctx.createTextureView(tex, .{});
     return .{ .tex = tex, .texv = texv };
+}
+
+inline fn getCenteredPos(pos: zm.Vec, space_w: u32, space_h: u32, reverse: bool) zm.Vec {
+    const w: f32 = @floatFromInt(space_w);
+    const h: f32 = @floatFromInt(space_h);
+    const half_w = w * 0.5;
+    const half_h = h * 0.5;
+    if (reverse) {
+        return zm.loadArr2(.{
+            pos[0] + half_w,
+            -pos[1] + half_h,
+        });
+    } else {
+        return zm.loadArr2(.{
+            pos[0] - half_w,
+            -pos[1] + half_h,
+        });
+    }
 }

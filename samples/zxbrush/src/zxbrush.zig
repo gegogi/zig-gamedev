@@ -48,23 +48,7 @@ fn onKey(
         prevOnKey.?(window, key, scancode, action, mods);
     }
 
-    if (zgui.io.getWantCaptureKeyboard()) return;
-
-    var handled: bool = false;
-    var openImageOffset: i32 = 0;
-    if (key == .left or key == .comma) {
-        if (action == .press or action == .repeat) {
-            openImageOffset = if (mods.shift) -5 else -1;
-        }
-    } else if (key == .right or key == .period) {
-        if (action == .press or action == .repeat) {
-            openImageOffset = if (mods.shift) 5 else 1;
-        }
-    }
-    if (openImageOffset != 0) {
-        app.openNeighborImageFile(openImageOffset) catch {};
-        handled = true;
-    }
+    app.onKey(key, scancode, action, mods);
 }
 
 fn onScroll(
@@ -76,41 +60,7 @@ fn onScroll(
         prevOnScroll.?(window, xoffset, yoffset);
     }
 
-    if (zgui.io.getWantCaptureMouse()) return;
-
-    var handled: bool = false;
-    const rbutton_state = window.getMouseButton(.right);
-    const lshift_state = window.getKey(.left_shift);
-    //const rshift_state = window.getKey(.right_shift);
-    if (rbutton_state == .press or rbutton_state == .repeat or lshift_state == .press or lshift_state == .repeat) {
-        if (app.img_path.str.len != 0) {
-            app.img_view_scale += @as(f32, @floatCast(yoffset)) * 0.1;
-            app.sel_rect.changeViewScale(app.img_view_scale);
-            handled = true;
-        }
-    } else if (rbutton_state == .release) {
-        var openImageOffset: i32 = 0;
-        if (yoffset > 0) {
-            openImageOffset = -1;
-        } else if (yoffset < 0) {
-            openImageOffset = 1;
-        }
-        if (openImageOffset != 0) {
-            app.openNeighborImageFile(openImageOffset) catch {};
-            handled = true;
-        }
-    }
-}
-
-inline fn getCenteredPos(pos: [2]f64, fb_w: u32, fb_h: u32) [2]f64 {
-    const _fb_w: f64 = @floatFromInt(fb_w);
-    const _fb_h: f64 = @floatFromInt(fb_h);
-    const _half_fb_w: f64 = _fb_w * 0.5;
-    const _half_fb_h: f64 = _fb_h * 0.5;
-    return [2]f64{
-        (pos[0] - _half_fb_w),
-        (_fb_h - pos[1] - _half_fb_h),
-    };
+    app.onScroll(xoffset, yoffset);
 }
 
 fn onMouseButton(
@@ -123,25 +73,7 @@ fn onMouseButton(
         prevOnMouseButton.?(window, button, action, mods);
     }
 
-    if (zgui.io.getWantCaptureMouse()) return;
-
-    const fb_w = app.gctx.swapchain_descriptor.width;
-    const fb_h = app.gctx.swapchain_descriptor.height;
-    const cpos = getCenteredPos(window.getCursorPos(), fb_w, fb_h);
-
-    if (button == .left) {
-        if (action == .press) {
-            app.sel_rect.start(cpos, app.img_view_scale);
-        } else if (action == .release) {
-            app.sel_rect.updateEnd(cpos);
-            app.sel_rect.is_dragging = false;
-        }
-    } else if (button == .right) {
-        if (action == .release) {
-            app.sel_rect.is_active = false;
-            app.sel_rect.is_dragging = false;
-        }
-    }
+    app.onMouseButton(button, action, mods);
 }
 
 fn onCursorPos(
@@ -153,18 +85,7 @@ fn onCursorPos(
         prevOnCursorPos.?(window, xpos, ypos);
     }
 
-    if (zgui.io.getWantCaptureMouse()) return;
-
-    const fb_w = app.gctx.swapchain_descriptor.width;
-    const fb_h = app.gctx.swapchain_descriptor.height;
-    const cpos = getCenteredPos(.{ xpos, ypos }, fb_w, fb_h);
-
-    app.cursor_x = xpos;
-    app.cursor_y = ypos;
-
-    if (app.sel_rect.is_dragging) {
-        app.sel_rect.updateEnd(cpos);
-    }
+    app.onCursorPos(xpos, ypos);
 }
 
 fn onDrop(
@@ -176,16 +97,7 @@ fn onDrop(
         prevOnDrop.?(window, path_count, paths);
     }
 
-    //if (zgui.io.getWantCaptureMouse()) return;
-
-    if (path_count == 1) {
-        app.openImageFile(std.mem.sliceTo(paths[0], 0), false) catch {};
-    } else {
-        var i: i32 = 0;
-        while (i < path_count) : (i += 1) {
-            //
-        }
-    }
+    app.onDrop(path_count, paths);
 }
 
 pub fn main() !void {
