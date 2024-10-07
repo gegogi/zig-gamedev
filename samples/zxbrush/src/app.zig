@@ -796,8 +796,10 @@ pub const App = struct {
         };
         var status_msg: MsgStr = undefined;
         const fname = std.fs.path.basenamePosix(self.img_path.str);
-        const s = std.fmt.bufPrintZ(status_msg.buf[0..], "fname={s}, size=({d},{d}), pos=({d:.2},{d:.2}), ipos=({d:.2},{d:.2})", .{
+        const s = std.fmt.bufPrintZ(status_msg.buf[0..], "fname={s}, size=({d},{d}), isize=({d},{d}), pos=({d:.2},{d:.2}), ipos=({d:.2},{d:.2})", .{
             fname,
+            self.gctx.swapchain_descriptor.width,
+            self.gctx.swapchain_descriptor.height,
             self.img_obj.w,
             self.img_obj.h,
             self.cursor_pos_win[0],
@@ -811,7 +813,7 @@ pub const App = struct {
             const maxp: zm.Vec = zm.maxFast(self.sel_beg_pos, self.sel_end_pos) - self.pan_offset;
             const s2 = std.fmt.bufPrintZ(
                 status_msg.buf[s.len..],
-                ", sel=({d},{d})-({d},{d})",
+                ", sel=({d:.2},{d:.2})-({d:.2},{d:.2})",
                 .{ minp[0], minp[1], maxp[0], maxp[1] },
             ) catch unreachable;
             status_msg.setLen(s.len + s2.len);
@@ -1078,7 +1080,7 @@ pub const App = struct {
         const lshift_state = self.window.getKey(.left_shift);
         //const rshift_state = window.getKey(.right_shift);
         if (rbutton_state == .press or rbutton_state == .repeat or lshift_state == .press or lshift_state == .repeat) {
-            const old_zoom_scale = self.img_fit_scale * self.zoom_scale;
+            const old_zoom_scale = self.zoom_scale;
             self.zoom_scale += @as(f32, @floatCast(yoffset)) * 0.1;
             var sel_beg_cpos = getCenteredPos(self.sel_beg_pos, fb_size, false);
             var sel_end_cpos = getCenteredPos(self.sel_end_pos, fb_size, false);
@@ -1111,8 +1113,10 @@ pub const App = struct {
 
         if (zgui.io.getWantCaptureMouse()) return;
 
-        const _p = self.window.getCursorPos();
-        const pos = zm.loadArr2(.{ @floatCast(_p[0]), @floatCast(_p[1]) });
+        const wp = self.window.getCursorPos();
+        const fb_x = @as(f32, @floatCast(wp[0])) * self.os_scale_factor;
+        const fb_y = @as(f32, @floatCast(wp[1])) * self.os_scale_factor;
+        const pos = zm.loadArr2(.{ fb_x, fb_y });
 
         if (button == .left) {
             if (action == .press) {
@@ -1158,13 +1162,16 @@ pub const App = struct {
 
     pub fn onCursorPos(
         self: *Self,
-        _px: f64,
-        _py: f64,
+        win_x: f64,
+        win_y: f64,
     ) void {
         //if (zgui.io.getWantCaptureMouse()) return;
 
+        const fb_x = @as(f32, @floatCast(win_x)) * self.os_scale_factor;
+        const fb_y = @as(f32, @floatCast(win_y)) * self.os_scale_factor;
+
         const old_pos = self.cursor_pos_win;
-        const pos = zm.loadArr2(.{ @floatCast(_px), @floatCast(_py) });
+        const pos = zm.loadArr2(.{ @floatCast(fb_x), @floatCast(fb_y) });
 
         if (self.is_sel_dragging) {
             self.sel_end_pos = pos;
