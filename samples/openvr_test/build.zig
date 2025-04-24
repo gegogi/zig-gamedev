@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const demo_name = "openvr_test";
-const content_dir = demo_name ++ "_content/";
+pub const demo_name = "openvr_test";
+pub const content_dir = demo_name ++ "_content/";
 
 pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     const cwd_path = b.pathJoin(&.{ "samples", demo_name });
@@ -22,6 +22,7 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     const zgui = b.dependency("zgui", .{
         .target = options.target,
         .backend = .glfw_dx12,
+        .with_implot = true,
     });
     exe.root_module.addImport("zgui", zgui.module("root"));
     exe.linkLibrary(zgui.artifact("imgui"));
@@ -44,9 +45,9 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     });
     exe.root_module.addImport("zopenvr", zopenvr.module("root"));
 
-    @import("zopenvr").addLibraryPathsTo(exe);
+    @import("zopenvr").addLibraryPathsTo(zopenvr, exe);
     @import("zopenvr").linkOpenVR(exe);
-    @import("zopenvr").installOpenVR(&exe.step, options.target.result, .bin);
+    @import("zopenvr").installOpenVR(zopenvr, &exe.step, options.target.result, .bin);
 
     const exe_options = b.addOptions();
     exe.root_module.addOptions("build_options", exe_options);
@@ -65,7 +66,7 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     // is required by DirectX 12 Agility SDK.
     exe.rdynamic = true;
 
-    @import("zwindows").install_d3d12(&exe.step, .bin);
+    @import("zwindows").install_d3d12(&exe.step, zwindows, .bin);
 
     return exe;
 }

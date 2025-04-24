@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const demo_name = "minimal_zgui_win32_d3d12";
-const content_dir = demo_name ++ "_content/";
+pub const demo_name = "minimal_zgui_win32_d3d12";
+pub const content_dir = demo_name ++ "_content/";
 
 pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     const cwd_path = b.pathJoin(&.{ "samples", demo_name });
@@ -45,7 +45,7 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
 
     exe.rdynamic = true;
 
-    @import("zwindows").install_d3d12(&exe.step, .bin);
+    @import("zwindows").install_d3d12(&exe.step, zwindows, .bin);
 
     return exe;
 }

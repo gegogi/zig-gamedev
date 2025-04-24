@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const demo_name = "minimal_zgui_glfw_gl";
-const content_dir = demo_name ++ "_content/";
+pub const demo_name = "minimal_zgui_glfw_gl";
+pub const content_dir = demo_name ++ "_content/";
 
 pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     const cwd_path = b.pathJoin(&.{ "samples", demo_name });
@@ -12,8 +12,6 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
         .target = options.target,
         .optimize = options.optimize,
     });
-
-    @import("system_sdk").addLibraryPathsTo(exe);
 
     const zglfw = b.dependency("zglfw", .{
         .target = options.target,
@@ -42,6 +40,12 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
         .install_subdir = b.pathJoin(&.{ "bin", content_dir }),
     });
     exe.step.dependOn(&install_content_step.step);
+
+    if (options.target.result.os.tag == .linux) {
+        if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
+            exe.addLibraryPath(system_sdk.path("linux/lib/x86_64-linux-gnu"));
+        }
+    }
 
     return exe;
 }

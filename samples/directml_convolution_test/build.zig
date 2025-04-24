@@ -1,13 +1,14 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
-const demo_name = "directml_convolution_test";
-const content_dir = demo_name ++ "_content/";
+pub const demo_name = "directml_convolution_test";
+pub const content_dir = demo_name ++ "_content/";
 
 // in future zig version e342433
 pub fn pathResolve(b: *std.Build, paths: []const []const u8) []u8 {
     return std.fs.path.resolve(b.allocator, paths) catch @panic("OOM");
 }
+
 pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     const cwd_path = b.pathJoin(&.{ "samples", demo_name });
     const src_path = b.pathJoin(&.{ cwd_path, "src" });
@@ -46,7 +47,7 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
         .install_subdir = b.pathJoin(&.{ "bin", content_dir }),
     });
     if (builtin.os.tag == .windows or builtin.os.tag == .linux) {
-        const compile_shaders = @import("zwindows").addCompileShaders(b, demo_name, .{ .shader_ver = "6_6" });
+        const compile_shaders = @import("zwindows").addCompileShaders(b, demo_name, zwindows, .{ .shader_ver = "6_6" });
         const root_path = pathResolve(b, &.{ @src().file, "..", "..", ".." });
         const shaders_path = b.pathJoin(&.{ root_path, content_path, "shaders" });
 
@@ -69,7 +70,7 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     // is required by DirectX 12 Agility SDK.
     exe.rdynamic = true;
 
-    @import("zwindows").install_directml(&exe.step, .bin);
+    @import("zwindows").install_directml(&exe.step, zwindows, .bin);
 
     return exe;
 }

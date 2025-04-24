@@ -153,7 +153,7 @@ const ContactListener = extern struct {
     };
 
     __v: *const zphy.ContactListener.VTable = &vtable,
-    bodies_touching_sensors: [9]SensorContacts = .{.{}} ** 9,
+    bodies_touching_sensors: [9]SensorContacts = .{SensorContacts{}} ** 9,
 
     const vtable = zphy.ContactListener.VTable{
         .onContactValidate = _onContactValidate,
@@ -248,8 +248,8 @@ const DebugRenderer = struct {
     usingnamespace zphy.DebugRenderer.Methods(@This());
     __v: *const zphy.DebugRenderer.VTable(@This()) = &vtable,
 
-    primitives: [max_prims]Primitive = .{.{}} ** max_prims,
-    vertices: [max_verts]DebugVertex = .{.{}} ** max_verts,
+    primitives: [max_prims]Primitive = .{Primitive{}} ** max_prims,
+    vertices: [max_verts]DebugVertex = .{DebugVertex{}} ** max_verts,
     indices: [max_indcs]u16 = .{std.math.maxInt(u16)} ** max_indcs,
     heads: struct {
         prim: usize = 0,
@@ -496,7 +496,7 @@ const DebugRenderer = struct {
         _: *DebugRenderer,
         _: *const [3]zphy.Real,
         _: *const [3]zphy.Real,
-        _: *const zphy.DebugRenderer.Color,
+        _: zphy.DebugRenderer.Color,
     ) callconv(.C) void {}
 
     fn drawTriangle(
@@ -504,7 +504,7 @@ const DebugRenderer = struct {
         _: *const [3]zphy.Real,
         _: *const [3]zphy.Real,
         _: *const [3]zphy.Real,
-        _: *const zphy.DebugRenderer.Color,
+        _: zphy.DebugRenderer.Color,
     ) callconv(.C) void {}
 
     fn createTriangleBatch(_: *DebugRenderer, _: [*]zphy.DebugRenderer.Triangle, _: u32) callconv(.C) *anyopaque {
@@ -1068,15 +1068,15 @@ fn update(demo: *DemoState) void {
 
         if (window.getMouseButton(.left) == .press) {
             if (demo.mouse.captured) {
-                window.setInputMode(.cursor, zglfw.Cursor.Mode.normal);
-                window.setInputMode(.raw_mouse_motion, false);
+                window.setInputMode(.cursor, zglfw.Cursor.Mode.normal) catch unreachable;
+                window.setInputMode(.raw_mouse_motion, false) catch unreachable;
             }
             demo.mouse.captured = false;
         }
         if (window.getMouseButton(.right) == .press) {
             if (!demo.mouse.captured) {
-                window.setInputMode(.cursor, zglfw.Cursor.Mode.disabled);
-                window.setInputMode(.raw_mouse_motion, true);
+                window.setInputMode(.cursor, zglfw.Cursor.Mode.disabled) catch unreachable;
+                window.setInputMode(.raw_mouse_motion, true) catch unreachable;
             }
             demo.mouse.captured = true;
         }
@@ -1372,7 +1372,7 @@ pub fn main() !void {
         std.posix.chdir(path) catch {};
     }
 
-    zglfw.windowHintTyped(.client_api, .no_api);
+    zglfw.windowHint(.client_api, .no_api);
 
     const window = try zglfw.Window.create(1600, 1000, window_title, null);
     defer window.destroy();

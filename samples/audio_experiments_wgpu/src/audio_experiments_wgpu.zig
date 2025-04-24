@@ -845,7 +845,7 @@ fn draw(demo: *DemoState) void {
     const vertex_buffer_handle = gctx.createBuffer(.{
         .usage = .{ .vertex = true },
         .size = AudioState.num_sets * AudioState.usable_samples_per_set * @sizeOf(Vertex),
-        .mapped_at_creation = true,
+        .mapped_at_creation = .true,
     });
     const vertex_buffer = gctx.lookupResource(vertex_buffer_handle).?;
     defer gctx.destroyResource(vertex_buffer_handle);
@@ -985,7 +985,7 @@ pub fn main() !void {
         std.posix.chdir(path) catch {};
     }
 
-    zglfw.windowHintTyped(.client_api, .no_api);
+    zglfw.windowHint(.client_api, .no_api);
 
     const window = try zglfw.Window.create(1600, 1000, window_title, null);
     defer window.destroy();

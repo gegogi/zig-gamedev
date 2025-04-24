@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const demo_name = "minimal_glfw_gl";
+pub const demo_name = "minimal_glfw_gl";
 
 pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     const cwd_path = b.pathJoin(&.{ "samples", demo_name });
@@ -20,6 +20,17 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
 
     const zopengl = b.dependency("zopengl", .{});
     exe.root_module.addImport("zopengl", zopengl.module("root"));
+
+    if (options.target.result.os.tag == .macos) {
+        if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
+            exe.addLibraryPath(system_sdk.path("macos12/usr/lib"));
+            exe.addSystemFrameworkPath(system_sdk.path("macos12/System/Library/Frameworks"));
+        }
+    } else if (options.target.result.os.tag == .linux) {
+        if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
+            exe.addLibraryPath(system_sdk.path("linux/lib/x86_64-linux-gnu"));
+        }
+    }
 
     return exe;
 }

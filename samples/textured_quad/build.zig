@@ -1,8 +1,8 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
-const demo_name = "textured_quad";
-const content_dir = demo_name ++ "_content/";
+pub const demo_name = "textured_quad";
+pub const content_dir = demo_name ++ "_content/";
 
 // in future zig version e342433
 pub fn pathResolve(b: *std.Build, paths: []const []const u8) []u8 {
@@ -47,7 +47,7 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     });
 
     if (builtin.os.tag == .windows or builtin.os.tag == .linux) {
-        const compile_shaders = @import("zwindows").addCompileShaders(b, demo_name, .{ .shader_ver = "6_6" });
+        const compile_shaders = @import("zwindows").addCompileShaders(b, demo_name, zwindows, .{ .shader_ver = "6_6" });
         const root_path = pathResolve(b, &.{ @src().file, "..", "..", ".." });
         const shaders_path = b.pathJoin(&.{ root_path, content_path, "shaders" });
 
@@ -69,7 +69,7 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     // is required by DirectX 12 Agility SDK.
     exe.rdynamic = true;
 
-    @import("zwindows").install_d3d12(&exe.step, .bin);
+    @import("zwindows").install_d3d12(&exe.step, zwindows, .bin);
 
     return exe;
 }

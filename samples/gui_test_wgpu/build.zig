@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const demo_name = "gui_test_wgpu";
-const content_dir = demo_name ++ "_content/";
+pub const demo_name = "gui_test_wgpu";
+pub const content_dir = demo_name ++ "_content/";
 
 pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     const cwd_path = b.pathJoin(&.{ "samples", demo_name });
@@ -29,6 +29,8 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     const zgui = b.dependency("zgui", .{
         .target = options.target,
         .backend = .glfw_wgpu,
+        .with_implot = true,
+        .with_node_editor = true,
         .with_te = true,
     });
     exe.root_module.addImport("zgui", zgui.module("root"));
@@ -43,7 +45,6 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
         .target = options.target,
     });
     exe.root_module.addImport("zstbi", zstbi.module("root"));
-    exe.linkLibrary(zstbi.artifact("zstbi"));
 
     const exe_options = b.addOptions();
     exe.root_module.addOptions("build_options", exe_options);
@@ -56,6 +57,17 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
         .install_subdir = b.pathJoin(&.{ "bin", content_dir }),
     });
     exe.step.dependOn(&install_content_step.step);
+
+    if (options.target.result.os.tag == .macos) {
+        if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
+            exe.addLibraryPath(system_sdk.path("macos12/usr/lib"));
+            exe.addSystemFrameworkPath(system_sdk.path("macos12/System/Library/Frameworks"));
+        }
+    } else if (options.target.result.os.tag == .linux) {
+        if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
+            exe.addLibraryPath(system_sdk.path("linux/lib/x86_64-linux-gnu"));
+        }
+    }
 
     return exe;
 }
