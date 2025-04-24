@@ -155,7 +155,7 @@ pub const samples = struct {
         pub const procedural_mesh_wgpu = @import("samples/procedural_mesh_wgpu/build.zig");
         pub const textured_quad_wgpu = @import("samples/textured_quad_wgpu/build.zig");
         pub const triangle_wgpu = @import("samples/triangle_wgpu/build.zig");
-    	pub const zxbrush = @import("samples/zxbrush/build.zig");
+        pub const zxbrush = @import("samples/zxbrush/build.zig");
     };
 
     /// Sample apps that can be built as web applications using zemscripten.
