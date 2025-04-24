@@ -31,11 +31,11 @@ export fn appOpenFile(fpath: [*c]const u8, index: c_int, count: c_int) callconv(
     return ret;
 }
 
-var prevOnKey: ?zglfw.Window.KeyFn = null;
-var prevOnScroll: ?zglfw.Window.ScrollFn = null;
-var prevOnMouseButton: ?zglfw.Window.MouseButtonFn = null;
-var prevOnCursorPos: ?zglfw.Window.CursorPosFn = null;
-var prevOnDrop: ?zglfw.Window.DropFn = null;
+var prevOnKey: ?zglfw.KeyFn = null;
+var prevOnScroll: ?zglfw.ScrollFn = null;
+var prevOnMouseButton: ?zglfw.MouseButtonFn = null;
+var prevOnCursorPos: ?zglfw.CursorPosFn = null;
+var prevOnDrop: ?zglfw.DropFn = null;
 
 fn onKey(
     window: *zglfw.Window,
@@ -133,7 +133,7 @@ pub fn main() !void {
         std.posix.chdir(path) catch {};
     }
 
-    zglfw.windowHintTyped(.client_api, .no_api);
+    zglfw.windowHint(.client_api, .no_api);
 
     const window = try zglfw.Window.create(800, 800, window_title, null);
     defer window.destroy();

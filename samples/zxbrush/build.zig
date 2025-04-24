@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const demo_name = "zxbrush";
-const content_dir = demo_name ++ "_content/";
+pub const demo_name = "zxbrush";
+pub const content_dir = demo_name ++ "_content/";
 
 pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     const cwd_path = b.pathJoin(&.{ "samples", demo_name });
@@ -16,8 +16,6 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
     if (options.target.result.os.tag == .windows) {
         exe.subsystem = .Windows;
     }
-
-    @import("system_sdk").addLibraryPathsTo(exe);
 
     const zglfw = b.dependency("zglfw", .{
         .target = options.target,
@@ -60,25 +58,27 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
         .target = options.target,
     });
     exe.root_module.addImport("zstbi", zstbi.module("root"));
-    exe.linkLibrary(zstbi.artifact("zstbi"));
+    //exe.linkLibrary(zstbi.artifact("zstbi"));
 
     // SDL2_image
     const zsdl = b.dependency("zsdl", .{});
     exe.root_module.addImport("zsdl2", zsdl.module("zsdl2"));
     exe.root_module.addImport("zsdl2_image", zsdl.module("zsdl2_image"));
 
+    @import("zsdl").prebuilt_sdl2.addLibraryPathsTo(exe);
+
     @import("zsdl").link_SDL2(exe);
     @import("zsdl").link_SDL2_image(exe);
-    //const sdl2_libs_path = b.dependency("sdl2-prebuilt", .{}).path("").getPath(b);
 
-    @import("zsdl").prebuilt.addLibraryPathsTo(exe);
-    //@import("zsdl").addRPathsTo(sdl2_libs_path, exe);
-
-    if (@import("zsdl").prebuilt.install_SDL2(b, options.target.result, .bin)) |install_sdl2_step| {
-        exe.step.dependOn(install_sdl2_step);
-    }
-    if (@import("zsdl").prebuilt.install_SDL2_image(b, options.target.result, .bin)) |install_sdl2_image_step| {
-        exe.step.dependOn(install_sdl2_image_step);
+    if (options.target.result.os.tag == .macos) {
+        if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
+            exe.addLibraryPath(system_sdk.path("macos12/usr/lib"));
+            exe.addSystemFrameworkPath(system_sdk.path("macos12/System/Library/Frameworks"));
+        }
+    } else if (options.target.result.os.tag == .linux) {
+        if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
+            exe.addLibraryPath(system_sdk.path("linux/lib/x86_64-linux-gnu"));
+        }
     }
 
     return exe;
