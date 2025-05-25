@@ -93,7 +93,7 @@ pub fn build(b: *std.Build) void {
     { // Benchmarks
         const benchmark_step = b.step("benchmark", "Run all benchmarks");
         const zmath = b.dependency("zmath", .{
-            .optimize = .ReleaseFast,
+            //.optimize = .ReleaseFast,
         });
         benchmark_step.dependOn(&b.addRunArtifact(zmath.artifact("zmath-benchmarks")).step);
     }
