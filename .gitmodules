@@ -10,12 +10,6 @@
 [submodule "libs/zemscripten"]
 	path = libs/zemscripten
 	url = git@github.com:zig-gamedev/zemscripten.git
-[submodule "libs/zglfw"]
-	path = libs/zglfw
-	url = git@github.com:zig-gamedev/zglfw.git
-[submodule "libs/zgpu"]
-	path = libs/zgpu
-	url = git@github.com:zig-gamedev/zgpu.git
 [submodule "libs/zgui"]
 	path = libs/zgui
 	url = git@github.com:zig-gamedev/zgui.git
@@ -61,3 +55,9 @@
 [submodule "libs/system_sdk"]
 	path = libs/system_sdk
 	url = git@github.com:zig-gamedev/system_sdk.git
+[submodule "libs/zglfw"]
+	path = libs/zglfw
+	url = git@github.com:gegogi/zglfw.git
+[submodule "libs/zgpu"]
+	path = libs/zgpu
+	url = git@github.com:gegogi/zgpu.git
