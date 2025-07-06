@@ -158,6 +158,7 @@ pub const samples = struct {
 
         // gegogi
         pub const zxbrush = @import("samples/zxbrush/build.zig");
+        pub const zchess = @import("samples/zchess/build.zig");
     };
 
     /// Sample apps that can be built as web applications using zemscripten.
