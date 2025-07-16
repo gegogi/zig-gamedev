@@ -81,5 +81,13 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
         }
     }
 
+    @import("../util/build.zig").link(exe, .{
+        .zgpu = zgpu.module("root"),
+        .zgui = zgui.module("root"),
+        .zsdl2 = zsdl.module("zsdl2"),
+        .zsdl2_image = zsdl.module("zsdl2_image"),
+        .zstbi = zstbi.module("root"),
+    });
+
     return exe;
 }

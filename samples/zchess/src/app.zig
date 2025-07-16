@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const file_dlg = @import("file_dlg.zig");
+const file_dlg = @import("util").file_dlg;
 const MsgStr = file_dlg.MsgStr;
 const PathStr = file_dlg.PathStr;
 const DirList = file_dlg.DirList;
@@ -15,10 +15,10 @@ const zglfw = @import("zglfw");
 const zgpu = @import("zgpu");
 const wgpu = zgpu.wgpu;
 const zgui = @import("zgui");
-const image = @import("image.zig");
+const image = @import("util").image;
 const img_exts = image.img_exts;
 const ImageObj = image.ImageObj;
-const wgsl = @import("zxbrush_wgsl.zig");
+const wgsl = @import("util").basic_wsgl;
 const content_dir = @import("build_options").content_dir;
 
 const depth_tex_format = wgpu.TextureFormat.depth16_unorm;

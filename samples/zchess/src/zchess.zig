@@ -7,13 +7,13 @@ const zgpu = @import("zgpu");
 const wgpu = zgpu.wgpu;
 const zgui = @import("zgui");
 const zm = @import("zmath");
-const file_dlg = @import("file_dlg.zig");
+const file_dlg = @import("util").file_dlg;
 const PathStr = file_dlg.PathStr;
 const zstbi = @import("zstbi");
 const App = @import("app.zig").App;
 
 const content_dir = @import("build_options").content_dir;
-const window_title = "ZXBrush";
+const window_title = "ZChess";
 
 // global vars
 var g_allocator: Allocator = undefined;
