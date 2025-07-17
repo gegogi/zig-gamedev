@@ -60,6 +60,7 @@
 !/libs/zstbi
 !/libs/ztracy
 !/libs/zwindows
+!/libs/zstockfish
 
 # Ignore some special directories
 *zig-cache

@@ -61,3 +61,6 @@
 [submodule "libs/zgpu"]
 	path = libs/zgpu
 	url = git@github.com:gegogi/zgpu.git
+[submodule "libs/zstockfish"]
+	path = libs/zstockfish
+	url = git@github.com:gegogi/Stockfish.git

@@ -113,5 +113,7 @@
         .ztracy = .{ .path = "libs/ztracy" },
 
         .zwindows = .{ .path = "libs/zwindows" },
+
+        .zstockfish = .{ .path = "libs/zstockfish" },
     },
 }

@@ -17,6 +17,25 @@ pub fn build(b: *std.Build, options: anytype) *std.Build.Step.Compile {
         exe.subsystem = .Windows;
     }
 
+    const zstockfish = b.dependency("zstockfish", .{
+        .target = options.target,
+    });
+    //std.debug.print("zstockfish.builder.install_path={s}\n", .{zstockfish.builder.install_path});
+    // TODO - zig-out을 하드코딩 하는 것이 최선인가?
+    const stockfish_install_file = b.addInstallBinFile(
+        .{
+            .src_path = .{
+                .owner = zstockfish.builder,
+                .sub_path = "zig-out/bin/stockfish",
+            },
+        },
+        "stockfish",
+    );
+    stockfish_install_file.step.dependOn(zstockfish.builder.getInstallStep());
+    b.getInstallStep().dependOn(&stockfish_install_file.step);
+
+    //exe.root_module.addImport("zstockfish", zstockfish.module("root"));
+
     const zglfw = b.dependency("zglfw", .{
         .target = options.target,
     });
